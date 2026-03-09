@@ -1,0 +1,234 @@
+/* Dancing Script for cursive signatures — must be first @import */
+@import url("https://fonts.googleapis.com/css2?family=Dancing+Script:wght@700&display=swap");
+
+@font-face {
+  font-family: "Plus Jakarta Sans";
+  src: url("/assets/fonts/PlusJakartaSans-Variable.woff2") format("woff2");
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: "Outfit";
+  src: url("/assets/fonts/Outfit-Variable.woff2") format("woff2");
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: "General Sans";
+  src: url("/assets/fonts/GeneralSans-Variable.woff2") format("woff2");
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: swap;
+}
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --radius: 0.5rem;
+
+    /* Premium Enterprise Light Theme — DKR LIMS */
+    /* background: #F9FAFB  foreground: #111827 */
+    --background: 0.9812 0.002 247;
+    --foreground: 0.168 0.014 264;
+
+    /* card: #FFFFFF */
+    --card: 1 0 0;
+    --card-foreground: 0.168 0.014 264;
+
+    --popover: 1 0 0;
+    --popover-foreground: 0.168 0.014 264;
+
+    /* primary: #4338CA (indigo-700) */
+    --primary: 0.432 0.166 275;
+    --primary-foreground: 1 0 0;
+
+    /* secondary: #E0E7FF (indigo-100) */
+    --secondary: 0.926 0.044 275;
+    --secondary-foreground: 0.432 0.166 275;
+
+    /* muted: #F3F4F6 (gray-100) */
+    --muted: 0.965 0.002 247;
+    --muted-foreground: 0.46 0.012 264;
+
+    /* accent: #F3F4F6 hover */
+    --accent: 0.958 0.003 247;
+    --accent-foreground: 0.232 0.014 264;
+
+    --destructive: 0.52 0.22 25;
+    --destructive-foreground: 1 0 0;
+
+    /* border: #E5E7EB (gray-200) */
+    --border: 0.918 0.004 264;
+    --input: 0.918 0.004 264;
+    --ring: 0.432 0.166 275;
+
+    --chart-1: 0.432 0.166 275;
+    --chart-2: 0.6 0.14 200;
+    --chart-3: 0.62 0.16 145;
+    --chart-4: 0.72 0.18 80;
+    --chart-5: 0.62 0.2 30;
+
+    /* sidebar: #F9FAFB, foreground: #374151 */
+    --sidebar: 0.9812 0.002 247;
+    --sidebar-foreground: 0.352 0.012 264;
+    /* active: #E0E7FF bg, #4338CA text */
+    --sidebar-primary: 0.432 0.166 275;
+    --sidebar-primary-foreground: 1 0 0;
+    --sidebar-accent: 0.926 0.044 275;
+    --sidebar-accent-foreground: 0.432 0.166 275;
+    /* border: #E5E7EB */
+    --sidebar-border: 0.918 0.004 264;
+    --sidebar-ring: 0.432 0.166 275;
+
+    --success: 0.62 0.16 145;
+    --warning: 0.72 0.18 80;
+    --info: 0.52 0.15 225;
+
+    --hero-gradient-start: 0.432 0.166 275;
+    --hero-gradient-end: 0.52 0.15 225;
+  }
+
+  .dark {
+    --background: 0.9812 0.002 247;
+    --foreground: 0.168 0.014 264;
+    --card: 1 0 0;
+    --card-foreground: 0.168 0.014 264;
+    --popover: 1 0 0;
+    --popover-foreground: 0.168 0.014 264;
+    --primary: 0.432 0.166 275;
+    --primary-foreground: 1 0 0;
+    --secondary: 0.926 0.044 275;
+    --secondary-foreground: 0.432 0.166 275;
+    --muted: 0.965 0.002 247;
+    --muted-foreground: 0.46 0.012 264;
+    --accent: 0.958 0.003 247;
+    --accent-foreground: 0.232 0.014 264;
+    --destructive: 0.52 0.22 25;
+    --destructive-foreground: 1 0 0;
+    --border: 0.918 0.004 264;
+    --input: 0.918 0.004 264;
+    --ring: 0.432 0.166 275;
+    --sidebar: 0.9812 0.002 247;
+    --sidebar-foreground: 0.352 0.012 264;
+    --sidebar-primary: 0.432 0.166 275;
+    --sidebar-primary-foreground: 1 0 0;
+    --sidebar-accent: 0.926 0.044 275;
+    --sidebar-accent-foreground: 0.432 0.166 275;
+    --sidebar-border: 0.918 0.004 264;
+    --sidebar-ring: 0.432 0.166 275;
+  }
+
+  * {
+    @apply border-border;
+  }
+
+  body {
+    @apply bg-background text-foreground font-sans antialiased;
+  }
+}
+
+@layer components {
+  /* Status Badges */
+  .badge-intake {
+    @apply bg-slate-100 text-slate-700 border border-slate-200;
+  }
+  .badge-eligibility {
+    @apply bg-blue-50 text-blue-700 border border-blue-200;
+  }
+  .badge-registration {
+    @apply bg-indigo-50 text-indigo-700 border border-indigo-200;
+  }
+  .badge-testspec {
+    @apply bg-violet-50 text-violet-700 border border-violet-200;
+  }
+  .badge-analysis {
+    @apply bg-amber-50 text-amber-700 border border-amber-200;
+  }
+  .badge-sicreview {
+    @apply bg-orange-50 text-orange-700 border border-orange-200;
+  }
+  .badge-qareview {
+    @apply bg-purple-50 text-purple-700 border border-purple-200;
+  }
+  .badge-coa {
+    @apply bg-emerald-50 text-emerald-700 border border-emerald-200;
+  }
+  .badge-hold {
+    @apply bg-red-50 text-red-700 border border-red-200;
+  }
+  .badge-pending {
+    @apply bg-gray-50 text-gray-600 border border-gray-200;
+  }
+  .badge-rejected {
+    @apply bg-red-100 text-red-800 border border-red-300;
+  }
+  .badge-pending-approval {
+    @apply bg-amber-50 text-amber-700 border border-amber-200;
+  }
+
+  /* SLA Badges */
+  .sla-green {
+    @apply bg-emerald-100 text-emerald-800 border border-emerald-200;
+  }
+  .sla-yellow {
+    @apply bg-amber-100 text-amber-800 border border-amber-200;
+  }
+  .sla-red {
+    @apply bg-red-100 text-red-800 border border-red-200;
+  }
+
+  /* Card styles */
+  .lims-card {
+    @apply bg-card rounded-lg border border-border shadow-xs;
+  }
+
+  /* Scrollable table wrapper */
+  .table-scroll {
+    @apply overflow-x-auto overflow-y-auto;
+  }
+
+  /* Page header */
+  .page-header {
+    @apply flex items-center justify-between mb-6;
+  }
+
+  .page-title {
+    @apply text-2xl font-semibold text-foreground tracking-tight;
+  }
+
+  .page-subtitle {
+    @apply text-sm text-muted-foreground mt-0.5;
+  }
+}
+
+/* Print styles */
+@media print {
+  .no-print,
+  .sidebar-wrapper,
+  nav,
+  header,
+  .print-hide {
+    display: none !important;
+  }
+
+  .print-full {
+    width: 100% !important;
+    margin: 0 !important;
+    padding: 0 !important;
+  }
+
+  body {
+    background: white !important;
+    color: black !important;
+  }
+
+  .coa-print-area {
+    width: 100%;
+    max-width: 100%;
+  }
+}
