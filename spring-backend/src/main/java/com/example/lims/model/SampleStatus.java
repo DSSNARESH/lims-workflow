@@ -4,6 +4,8 @@ public enum SampleStatus {
     PENDING,
     ELIGIBLE,
     HOLD,
+    REGISTRATION,
+    TEST_SPEC,
     ANALYSIS,
     REVIEW,
     COMPLETED,

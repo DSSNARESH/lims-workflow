@@ -3,6 +3,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
 import {
   AlertTriangle,
@@ -18,14 +19,8 @@ import React, { useState } from "react";
 import { toast } from "sonner";
 import { StatusBadge } from "../components/StatusBadge";
 import { useRole } from "../contexts/RoleContext";
-import { useActor } from "../hooks/useActor";
-import {
-  AUDIT_LOG,
-  DUMMY_USERS,
-  SAMPLE_INTAKES,
-  type SICApprovalRecord,
-  getSampleById,
-} from "../lib/mockData";
+import { AUDIT_LOG, DUMMY_USERS, type SICApprovalRecord } from "../lib/mockData";
+import { getSamples, toWorkflowStage, updateSampleStage } from "../lib/springApi";
 
 const ACCEPTANCE_CHECKLIST = [
   {
@@ -73,7 +68,18 @@ export function EligibilityCheck({
 }: EligibilityCheckProps) {
   const navigate = useNavigate();
   const { activeUser } = useRole();
-  const { actor } = useActor();
+  const queryClient = useQueryClient();
+  const { data: samples = [] } = useQuery({
+    queryKey: ["workflow-samples"],
+    queryFn: getSamples,
+  });
+  const updateStageMutation = useMutation({
+    mutationFn: ({ sampleId, stage }: { sampleId: string; stage: "REGISTRATION" | "HOLD" }) =>
+      updateSampleStage(sampleId, stage),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["workflow-samples"] });
+    },
+  });
 
   const [selectedSampleId, setSelectedSampleId] = useState(propSampleId || "");
   const [acceptanceChecked, setAcceptanceChecked] = useState<
@@ -92,13 +98,11 @@ export function EligibilityCheck({
   );
   const [submitting, setSubmitting] = useState(false);
 
-  const eligibleSamples = SAMPLE_INTAKES.filter(
-    (s) =>
-      s.status === "Intake" ||
-      s.status === "EligibilityCheck" ||
-      s.status === "PendingApproval",
-  );
-  const sample = selectedSampleId ? getSampleById(selectedSampleId) : null;
+  const eligibleSamples = samples.filter((sample) => sample.sampleStatus === "PENDING");
+  const sample =
+    selectedSampleId
+      ? samples.find((item) => item.sampleId === selectedSampleId) ?? null
+      : null;
 
   const allAcceptanceChecked = ACCEPTANCE_CHECKLIST.every(
     (item) => acceptanceChecked[item.id],
@@ -111,23 +115,12 @@ export function EligibilityCheck({
   // Derive assignee list: support both string and string[] for backwards compat
   const getAssignees = (): SICApprovalRecord[] => {
     if (!sample) return [];
-    // If approvalDecisions exist, use them
-    if (sample.approvalDecisions && sample.approvalDecisions.length > 0) {
-      return sample.approvalDecisions;
-    }
-    // Legacy: single string assignee
-    const ids = Array.isArray(sample.assignToSectionInCharge)
-      ? sample.assignToSectionInCharge
-      : [sample.assignToSectionInCharge];
-    return ids.map((uid) => {
-      const user = DUMMY_USERS.find((u) => u.id === uid);
-      return {
-        userId: uid,
-        userName: user?.name ?? uid,
-        decision: "pending" as const,
-        comment: "",
-      };
-    });
+    return DUMMY_USERS.filter((user) => user.role === "sectionInCharge").map((user) => ({
+      userId: user.id,
+      userName: user.name,
+      decision: user.id === activeUser.id ? "pending" : "pending",
+      comment: "",
+    }));
   };
 
   const assignees = getAssignees();
@@ -138,10 +131,8 @@ export function EligibilityCheck({
 
   // Compute aggregate status from decisions
   const computeAggregateStatus = (decisions: SICApprovalRecord[]) => {
-    if (decisions.some((d) => d.decision === "hold")) return "OnHold";
-    if (decisions.some((d) => d.decision === "rejected")) return "Rejected";
-    if (decisions.every((d) => d.decision === "approved"))
-      return "Registration";
+    if (decisions.some((d) => d.decision === "hold" || d.decision === "rejected")) return "OnHold";
+    if (decisions.every((d) => d.decision === "approved")) return "Registration";
     return "PendingApproval";
   };
 
@@ -149,7 +140,6 @@ export function EligibilityCheck({
     if (!sample) return;
     const comment = decisionComments[activeUser.id] ?? "";
 
-    // For hold/reject, comment is required
     if ((decision === "hold" || decision === "rejected") && !comment.trim()) {
       setCommentErrors((prev) => ({
         ...prev,
@@ -157,101 +147,56 @@ export function EligibilityCheck({
       }));
       return;
     }
-    setCommentErrors((prev) => ({ ...prev, [activeUser.id]: "" }));
 
+    setCommentErrors((prev) => ({ ...prev, [activeUser.id]: "" }));
     setSubmitting(true);
 
-    const idx = SAMPLE_INTAKES.findIndex(
-      (s) => s.sampleId === selectedSampleId,
-    );
-    if (idx !== -1) {
-      // Build updated approval decisions
-      const currentDecisions: SICApprovalRecord[] =
-        SAMPLE_INTAKES[idx].approvalDecisions ?? assignees;
-
-      const updatedDecisions = currentDecisions.map((d) =>
-        d.userId === activeUser.id
-          ? {
-              ...d,
-              decision,
-              comment,
-              decidedAt: new Date().toISOString(),
-            }
-          : d,
-      );
-
-      const newStatus = computeAggregateStatus(updatedDecisions);
-
-      SAMPLE_INTAKES[idx] = {
-        ...SAMPLE_INTAKES[idx],
-        approvalDecisions: updatedDecisions,
-        status: newStatus,
-      };
-
-      AUDIT_LOG.push({
-        id: `al-${Date.now()}`,
-        timestamp: new Date().toISOString(),
-        userId: activeUser.id,
-        userName: activeUser.name,
-        action: decision.toUpperCase(),
-        entity: "EligibilityCheck",
-        entityId: selectedSampleId,
-        details: comment
-          ? `${activeUser.name} marked ${decision}: ${comment}`
-          : `${activeUser.name} marked ${decision}`,
-      });
-
-      // Backend: submit eligibility vote
-      if (actor) {
-        try {
-          await actor.submitEligibilityVote(
-            selectedSampleId,
-            decision === "approved",
+    const updatedDecisions = assignees.map((d) =>
+      d.userId === activeUser.id
+        ? {
+            ...d,
+            decision,
             comment,
-            [],
-          );
-        } catch (err) {
-          console.warn("Backend submitEligibilityVote failed:", err);
-        }
-      }
+            decidedAt: new Date().toISOString(),
+          }
+        : d,
+    );
 
-      setSubmitting(false);
+    const newStatus = computeAggregateStatus(updatedDecisions);
 
-      if (newStatus === "Registration") {
-        toast.success("All assignees approved — Sample is now Eligible", {
-          description: "Proceeding to Registration stage",
-        });
-        navigate({
-          to: "/registration/$sampleId",
-          params: { sampleId: selectedSampleId },
-        });
-      } else if (newStatus === "OnHold") {
-        toast.warning("Sample placed On Hold", {
-          description: `${activeUser.name} placed the sample on hold`,
-        });
-        navigate({ to: "/" });
-      } else if (newStatus === "Rejected") {
-        toast.error("Sample Rejected", {
-          description: `${activeUser.name} rejected this sample`,
-        });
-        navigate({ to: "/" });
-      } else {
-        // PendingApproval
-        const updatedForCount = assignees.map((a) =>
-          a.userId === activeUser.id ? { ...a, decision } : a,
-        );
-        const stillPending = updatedForCount.filter(
-          (d) => d.decision === "pending",
-        ).length;
-        toast.info("Your decision recorded — awaiting other approvals", {
-          description: `${stillPending} approval(s) still pending`,
-        });
-        // Refresh view
-        setSelectedSampleId("");
-        setTimeout(() => setSelectedSampleId(selectedSampleId), 50);
-      }
+    AUDIT_LOG.push({
+      id: `al-${Date.now()}`,
+      timestamp: new Date().toISOString(),
+      userId: activeUser.id,
+      userName: activeUser.name,
+      action: decision.toUpperCase(),
+      entity: "EligibilityCheck",
+      entityId: selectedSampleId,
+      details: comment
+        ? `${activeUser.name} marked ${decision}: ${comment}`
+        : `${activeUser.name} marked ${decision}`,
+    });
+
+    await updateStageMutation.mutateAsync({
+      sampleId: selectedSampleId,
+      stage: newStatus === "Registration" ? "REGISTRATION" : "HOLD",
+    });
+
+    setSubmitting(false);
+
+    if (newStatus === "Registration") {
+      toast.success("Sample marked eligible", {
+        description: "Proceeding to Registration stage",
+      });
+      navigate({
+        to: "/registration/$sampleId",
+        params: { sampleId: selectedSampleId },
+      });
     } else {
-      setSubmitting(false);
+      toast.warning("Sample moved to hold", {
+        description: comment || "Eligibility review did not pass.",
+      });
+      navigate({ to: "/" });
     }
   };
 
@@ -334,10 +279,10 @@ export function EligibilityCheck({
                         {s.sampleName}
                       </span>
                       <span className="text-xs text-muted-foreground">
-                        {s.customerName}
+                        {s.clientName}
                       </span>
                     </div>
-                    <StatusBadge status={s.status} />
+                    <StatusBadge status={toWorkflowStage(s.sampleStatus)} />
                   </button>
                 ))}
               </div>
@@ -366,11 +311,11 @@ export function EligibilityCheck({
                   </div>
                   <div>
                     <p className="text-xs text-muted-foreground">Customer</p>
-                    <p className="text-sm">{sample.customerName}</p>
+                    <p className="text-sm">{sample.clientName}</p>
                   </div>
                   <div>
                     <p className="text-xs text-muted-foreground">Status</p>
-                    <StatusBadge status={sample.status} />
+                    <StatusBadge status={toWorkflowStage(sample.sampleStatus)} />
                   </div>
                 </div>
                 <Button

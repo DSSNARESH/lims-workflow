@@ -24,6 +24,7 @@ import {
   Wrench,
   Zap,
 } from "lucide-react";
+import { useQuery } from "@tanstack/react-query";
 import React, { useMemo } from "react";
 import {
   Bar,
@@ -39,13 +40,8 @@ import {
 } from "recharts";
 import { StatusBadge } from "../components/StatusBadge";
 import { useRole } from "../contexts/RoleContext";
-import { useAllTasks } from "../hooks/useBackendService";
-import {
-  AUDIT_LOG,
-  SAMPLE_INTAKES,
-  type WorkflowStage,
-  getStatusLabel,
-} from "../lib/mockData";
+import { AUDIT_LOG, type WorkflowStage, getStatusLabel } from "../lib/mockData";
+import { getSamples, toWorkflowStage } from "../lib/springApi";
 
 const STAGE_COLORS: Record<string, string> = {
   Intake: "#94a3b8",
@@ -160,22 +156,34 @@ function relativeTime(timestamp: string): string {
 export function Dashboard() {
   const navigate = useNavigate();
   const { pendingTaskCount, tasks } = useRole();
+  const { data: samples = [] } = useQuery({
+    queryKey: ["workflow-samples"],
+    queryFn: getSamples,
+  });
+
+  const workflowSamples = samples.map((sample) => ({
+    ...sample,
+    stage: toWorkflowStage(sample.sampleStatus),
+    createdAt: sample.dateReceived,
+    status: toWorkflowStage(sample.sampleStatus),
+    customerName: sample.clientName,
+    sampleType: sample.testName,
+    dateOfReceipt: sample.dateReceived,
+  }));
 
   // Stats
-  const totalSamples = SAMPLE_INTAKES.length;
-  const inAnalysis = SAMPLE_INTAKES.filter(
-    (s) => s.status === "Analysis",
-  ).length;
-  const onHold = SAMPLE_INTAKES.filter((s) => s.status === "OnHold").length;
+  const totalSamples = workflowSamples.length;
+  const inAnalysis = workflowSamples.filter((s) => s.stage === "Analysis").length;
+  const onHold = workflowSamples.filter((s) => s.stage === "OnHold").length;
 
   // Workflow distribution
   const stageCounts = useMemo(() => {
     const counts: Record<string, number> = {};
-    for (const s of SAMPLE_INTAKES) {
-      counts[s.status] = (counts[s.status] || 0) + 1;
+    for (const s of workflowSamples) {
+      counts[s.stage] = (counts[s.stage] || 0) + 1;
     }
     return counts;
-  }, []);
+  }, [workflowSamples]);
 
   const chartData = useMemo(
     () =>
@@ -199,7 +207,7 @@ export function Dashboard() {
 
   const recentSamples = useMemo(
     () =>
-      [...SAMPLE_INTAKES]
+      [...workflowSamples]
         .sort(
           (a, b) =>
             new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
