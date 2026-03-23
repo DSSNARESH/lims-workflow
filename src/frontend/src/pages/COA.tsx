@@ -2,6 +2,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Textarea } from "@/components/ui/textarea";
+import { useQuery } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
 import {
   ArrowLeft,
@@ -17,7 +18,7 @@ import {
   Shield,
 } from "lucide-react";
 import React, { useEffect, useRef, useState } from "react";
-import { COA_RECORDS, SAMPLE_INTAKES, getSampleById } from "../lib/mockData";
+import { getSamples } from "../lib/springApi";
 
 interface COAProps {
   sampleId?: string;
@@ -64,6 +65,10 @@ const COA_TEST_PARAMS = [
 export function COA({ sampleId: propSampleId }: COAProps) {
   const navigate = useNavigate();
   const coaPrintRef = useRef<HTMLDivElement>(null);
+  const { data: samples = [] } = useQuery({
+    queryKey: ["workflow-samples"],
+    queryFn: getSamples,
+  });
 
   const [checkedRows, setCheckedRows] = useState<Record<string, boolean>>({});
   const [lineageExpanded, setLineageExpanded] = useState(true);
@@ -141,10 +146,41 @@ export function COA({ sampleId: propSampleId }: COAProps) {
     printWindow.document.close();
   }
 
+  const coaRecords = samples
+    .filter((sample) => sample.sampleStatus === "COA")
+    .map((sample, index) => ({
+      id: `coa-${sample.sampleId}`,
+      sampleId: sample.sampleId,
+      coaNumber: `COA-2026-${String(index + 1).padStart(3, "0")}`,
+      registrationNumber: `REG-2026-${String(index + 1).padStart(3, "0")}`,
+      clientName: sample.clientName,
+      sampleName: sample.sampleName,
+      issueDate: new Date().toISOString(),
+      analystName: sample.testSpecs[0]?.assignedAnalyst || "Assigned analyst",
+      sicReviewerName: sample.sicReview?.reviewerName || "SIC Reviewer",
+      qaApproverName: sample.qaReview?.qaHeadName || "QA Approver",
+      analystSignDate: new Date(sample.dateReceived).toISOString().split("T")[0],
+      sicSignDate: new Date().toISOString().split("T")[0],
+      qaSignDate: new Date().toISOString().split("T")[0],
+      parameters: sample.analysisResults.map((result) => ({
+        parameter: result.parameter,
+        acceptanceCriteria:
+          sample.testSpecs.find((spec) => spec.parameter === result.parameter)
+            ?.acceptanceCriteria || "",
+        observedValue: result.observedValue,
+        unit: result.unit,
+        verdict: result.verdict || "",
+      })),
+      overallResult: sample.analysisResults.some((result) => result.verdict === "FAIL" || result.verdict === "OOS")
+        ? "FAIL"
+        : "PASS",
+      complianceStatement: "This product complies with the specifications as per the approved laboratory method.",
+    }));
+
   const coa = propSampleId
-    ? COA_RECORDS.find((c) => c.sampleId === propSampleId)
+    ? coaRecords.find((c) => c.sampleId === propSampleId)
     : null;
-  const sample = propSampleId ? getSampleById(propSampleId) : null;
+  const sample = propSampleId ? samples.find((item) => item.sampleId === propSampleId) ?? null : null;
 
   // ─── List View (no sampleId or no coa found) ────────────────────────────────
   if (!propSampleId || !coa) {
@@ -172,7 +208,7 @@ export function COA({ sampleId: propSampleId }: COAProps) {
         <Card className="lims-card">
           <CardContent className="p-5">
             <p className="text-sm font-semibold mb-3">Select a COA to view</p>
-            {COA_RECORDS.length === 0 ? (
+            {coaRecords.length === 0 ? (
               <div
                 className="flex items-center gap-2 text-muted-foreground py-4"
                 data-ocid="coa.empty_state"
@@ -185,7 +221,7 @@ export function COA({ sampleId: propSampleId }: COAProps) {
               </div>
             ) : (
               <div className="space-y-2">
-                {COA_RECORDS.map((c, i) => (
+                {coaRecords.map((c, i) => (
                   <button
                     type="button"
                     key={c.id}
@@ -253,7 +289,7 @@ export function COA({ sampleId: propSampleId }: COAProps) {
   const expiryDate =
     (sample as { expiryDate?: string } | null)?.expiryDate || "Jan 2026";
   const receiptDate = sample
-    ? new Date(sample.dateOfReceipt).toLocaleDateString("en-IN", {
+    ? new Date(sample.dateReceived).toLocaleDateString("en-IN", {
         day: "2-digit",
         month: "short",
         year: "numeric",
@@ -396,7 +432,7 @@ export function COA({ sampleId: propSampleId }: COAProps) {
                     <div>
                       <span className="text-gray-500">Sample Type:</span>{" "}
                       <span className="font-semibold text-gray-800">
-                        {sample?.sampleType || "Finished Product"}
+                        {sample?.testName || "Finished Product"}
                       </span>
                     </div>
                     <div>
