@@ -12,7 +12,6 @@ import {
 } from "@/components/ui/select";
 import { Separator } from "@/components/ui/separator";
 import { Textarea } from "@/components/ui/textarea";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
 import {
   AlertCircle,
@@ -31,8 +30,15 @@ import React, { useState } from "react";
 import { toast } from "sonner";
 import { StatusBadge } from "../components/StatusBadge";
 import { useRole } from "../contexts/RoleContext";
-import { AUDIT_LOG, DUMMY_USERS, type TestSpecRow } from "../lib/mockData";
-import { getSamples, saveTestSpec, toWorkflowStage } from "../lib/springApi";
+import { useActor } from "../hooks/useActor";
+import {
+  AUDIT_LOG,
+  DUMMY_USERS,
+  SAMPLE_INTAKES,
+  TEST_SPECS,
+  type TestSpecRow,
+  getSampleById,
+} from "../lib/mockData";
 
 interface TestSpecificationProps {
   sampleId?: string;
@@ -104,48 +110,14 @@ export function TestSpecification({
 }: TestSpecificationProps) {
   const navigate = useNavigate();
   const { activeUser } = useRole();
-  const queryClient = useQueryClient();
-  const { data: samples = [] } = useQuery({
-    queryKey: ["workflow-samples"],
-    queryFn: getSamples,
-  });
-  const saveTestSpecMutation = useMutation({
-    mutationFn: ({ sampleId, assignedAnalyst, testSpecs }: { sampleId: string; assignedAnalyst: string; testSpecs: Parameters<typeof saveTestSpec>[2] }) =>
-      saveTestSpec(sampleId, assignedAnalyst, testSpecs),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["workflow-samples"] });
-    },
-  });
+  const { actor } = useActor();
 
   const [selectedSampleId, setSelectedSampleId] = useState(propSampleId || "");
-  const selectedBackendSample = selectedSampleId
-    ? samples.find((item) => item.sampleId === selectedSampleId) ?? null
-    : null;
-  const sample = selectedBackendSample
-    ? {
-        sampleId: selectedBackendSample.sampleId,
-        sampleName: selectedBackendSample.sampleName,
-        customerName: selectedBackendSample.clientName,
-        sampleType: selectedBackendSample.testName,
-        physicalForm: selectedBackendSample.testName,
-        specialHandling: "",
-        dateOfReceipt: selectedBackendSample.dateReceived,
-        status: toWorkflowStage(selectedBackendSample.sampleStatus),
-      }
-    : null;
+  const sample = selectedSampleId ? getSampleById(selectedSampleId) : null;
   const analysts = DUMMY_USERS.filter((u) => u.role === "analyst");
-  const testSpecSamples = samples.filter((item) => item.sampleStatus === "TEST_SPEC");
+  const testSpecSamples = SAMPLE_INTAKES.filter((s) => s.status === "TestSpec");
 
-  const existingSpecs = selectedBackendSample?.testSpecs?.map((spec, index) => ({
-    id: `ts-${index}`,
-    parameter: spec.parameter,
-    acceptanceCriteria: spec.acceptanceCriteria,
-    methodSop: spec.method,
-    referenceStandard: spec.referenceStandard,
-    qaNotes: "",
-    assignedAnalyst: spec.assignedAnalyst || "",
-    targetSla: String(spec.targetSla ?? ""),
-  }));
+  const existingSpecs = TEST_SPECS[selectedSampleId];
   const [rows, setRows] = useState<TestSpecRow[]>(
     existingSpecs ||
       DEFAULT_PARAMS.map((p, i) => ({
@@ -207,18 +179,32 @@ export function TestSpecification({
         : "",
     }));
 
-    await saveTestSpecMutation.mutateAsync({
-      sampleId: selectedSampleId,
-      assignedAnalyst: leadAnalyst,
-      testSpecs: updatedRows.map((r) => ({
-        parameter: r.parameter,
-        acceptanceCriteria: r.acceptanceCriteria,
-        method: r.methodSop,
-        referenceStandard: r.referenceStandard,
-        assignedAnalyst: leadAnalyst,
-        targetSla: 3,
-      })),
-    });
+    TEST_SPECS[selectedSampleId] = updatedRows;
+    const idx = SAMPLE_INTAKES.findIndex(
+      (s) => s.sampleId === selectedSampleId,
+    );
+    if (idx !== -1)
+      SAMPLE_INTAKES[idx] = { ...SAMPLE_INTAKES[idx], status: "Analysis" };
+
+    // Backend: save test specs and advance to Analysis stage
+    if (actor && selectedSampleId) {
+      try {
+        const backendSpecs = updatedRows.map((r) => ({
+          parameter: r.parameter,
+          acceptanceCriteria: r.acceptanceCriteria,
+          method: r.methodSop,
+          referenceStandard: r.referenceStandard,
+          assignedAnalyst: leadAnalyst,
+          targetSLA: BigInt(3),
+        }));
+        await (actor as any).saveTestSpec(selectedSampleId, backendSpecs);
+        if (leadAnalyst) {
+          await (actor as any).assignAnalyst(selectedSampleId, leadAnalyst);
+        }
+      } catch (err) {
+        console.warn("Backend saveTestSpec failed:", err);
+      }
+    }
 
     AUDIT_LOG.push({
       id: `al-${Date.now()}`,
@@ -303,10 +289,10 @@ export function TestSpecification({
                         {s.sampleName}
                       </span>
                       <span className="text-xs text-muted-foreground">
-                        {s.clientName}
+                        {s.customerName}
                       </span>
                     </div>
-                    <StatusBadge status={toWorkflowStage(s.sampleStatus)} />
+                    <StatusBadge status={s.status} />
                   </button>
                 ))}
               </div>

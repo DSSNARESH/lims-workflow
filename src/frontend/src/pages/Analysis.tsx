@@ -3,7 +3,6 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
 import {
   AlertTriangle,
@@ -31,8 +30,17 @@ import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { StatusBadge } from "../components/StatusBadge";
 import { useRole } from "../contexts/RoleContext";
-import { AUDIT_LOG, type AnalysisResultRow, getUserById } from "../lib/mockData";
-import { getSamples, saveAnalysis, submitAnalysis, toWorkflowStage } from "../lib/springApi";
+import { useActor } from "../hooks/useActor";
+import {
+  ANALYSIS_RESULTS,
+  AUDIT_LOG,
+  type AnalysisResultRow,
+  MOCK_TASKS,
+  SAMPLE_INTAKES,
+  TEST_SPECS,
+  getSampleById,
+  getUserById,
+} from "../lib/mockData";
 
 // ─────────────────────────────────────────────
 // Auto-verdict logic: parse acceptance criteria
@@ -84,26 +92,12 @@ function autoVerdict(
   return "";
 }
 
-function buildRows(sample: ReturnType<typeof getSampleLookup>): AnalysisResultRow[] {
-  if (!sample) return [];
-  if (sample.analysisResults.length > 0) {
-    return sample.analysisResults.map((result, index) => ({
-      id: `ar-${index}`,
-      parameter: result.parameter,
-      acceptanceCriteria:
-        sample.testSpecs.find((spec) => spec.parameter === result.parameter)
-          ?.acceptanceCriteria || "",
-      observedValue: result.observedValue,
-      unit: result.unit,
-      verdict: (result.verdict || "") as AnalysisResultRow["verdict"],
-      testDateStart: new Date().toISOString().split("T")[0],
-      testDateEnd: "",
-      remarks: result.remark || "",
-    }));
-  }
-
-  return sample.testSpecs.map((spec, index) => ({
-    id: `ar-new-${index}`,
+function buildRows(sampleId: string): AnalysisResultRow[] {
+  const existingResults = ANALYSIS_RESULTS[sampleId];
+  if (existingResults) return existingResults;
+  const specs = TEST_SPECS[sampleId] || [];
+  return specs.map((spec) => ({
+    id: `ar-new-${spec.id}`,
     parameter: spec.parameter,
     acceptanceCriteria: spec.acceptanceCriteria,
     observedValue: "",
@@ -113,10 +107,6 @@ function buildRows(sample: ReturnType<typeof getSampleLookup>): AnalysisResultRo
     testDateEnd: "",
     remarks: "",
   }));
-}
-
-function getSampleLookup(sampleId: string, samples: Awaited<ReturnType<typeof getSamples>>) {
-  return samples.find((sample) => sample.sampleId === sampleId) ?? null;
 }
 
 // Dummy uploaded files for the reference design
@@ -132,42 +122,15 @@ interface AnalysisProps {
 export function Analysis({ sampleId: propSampleId }: AnalysisProps) {
   const navigate = useNavigate();
   const { activeUser } = useRole();
-  const queryClient = useQueryClient();
-  const { data: samples = [] } = useQuery({
-    queryKey: ["workflow-samples"],
-    queryFn: getSamples,
-  });
-  const saveAnalysisMutation = useMutation({
-    mutationFn: ({ sampleId, results }: { sampleId: string; results: Parameters<typeof saveAnalysis>[1] }) =>
-      saveAnalysis(sampleId, results),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["workflow-samples"] });
-    },
-  });
-  const submitAnalysisMutation = useMutation({
-    mutationFn: submitAnalysis,
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["workflow-samples"] });
-    },
-  });
+  const { actor } = useActor();
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const [selectedSampleId, setSelectedSampleId] = useState(propSampleId || "");
-  const backendSample = getSampleLookup(selectedSampleId, samples);
-  const sample = backendSample
-    ? {
-        sampleId: backendSample.sampleId,
-        sampleName: backendSample.sampleName,
-        status: toWorkflowStage(backendSample.sampleStatus),
-        physicalForm: backendSample.testName,
-        sampleType: backendSample.clientName,
-        createdAt: backendSample.dateReceived,
-      }
-    : null;
-  const analysisSamples = samples.filter((item) => item.sampleStatus === "ANALYSIS");
+  const sample = selectedSampleId ? getSampleById(selectedSampleId) : null;
+  const analysisSamples = SAMPLE_INTAKES.filter((s) => s.status === "Analysis");
 
   const [rows, setRows] = useState<AnalysisResultRow[]>(() =>
-    buildRows(getSampleLookup(propSampleId || "", samples)),
+    buildRows(propSampleId || ""),
   );
 
   const [analystRemarks, setAnalystRemarks] = useState("");
@@ -183,16 +146,18 @@ export function Analysis({ sampleId: propSampleId }: AnalysisProps) {
   const [showBatchHistory, setShowBatchHistory] = useState(false);
 
   // Pending queue: tasks for the analyst (sidebar)
-  const pendingQueue = [];
+  const pendingQueue = MOCK_TASKS.filter(
+    (t) => t.taskType === "analysis" && t.assignedUserId === activeUser.id,
+  );
 
   // Re-populate rows whenever the selected sample changes
   useEffect(() => {
     if (selectedSampleId) {
-      setRows(buildRows(getSampleLookup(selectedSampleId, samples)));
+      setRows(buildRows(selectedSampleId));
       setAnalystRemarks("");
       setOverallResult("");
     }
-  }, [selectedSampleId, samples]);
+  }, [selectedSampleId]);
 
   const computedOverall = rows.some(
     (r) => r.verdict === "FAIL" || r.verdict === "OOS",
@@ -227,33 +192,66 @@ export function Analysis({ sampleId: propSampleId }: AnalysisProps) {
 
   const handleSaveProgress = async () => {
     setSaving(true);
-    await saveAnalysisMutation.mutateAsync({
-      sampleId: selectedSampleId,
-      results: rows.map((r) => ({
-        parameter: r.parameter,
-        observedValue: r.observedValue,
-        unit: r.unit,
-        verdict: (r.verdict || null) as "PASS" | "FAIL" | "OOS" | null,
-        remark: r.remarks || "",
-      })),
-    });
+    ANALYSIS_RESULTS[selectedSampleId] = rows;
+    if (actor && selectedSampleId) {
+      try {
+        const backendResults = rows.map((r) => ({
+          parameter: r.parameter,
+          observedValue: r.observedValue,
+          unit: r.unit,
+          verdict:
+            r.verdict === "PASS"
+              ? { __kind__: "pass" }
+              : r.verdict === "FAIL"
+                ? { __kind__: "fail" }
+                : { __kind__: "oos" },
+          remark: r.remarks || "",
+        }));
+        await (actor as any).saveAnalysisResult(
+          selectedSampleId,
+          backendResults,
+        );
+      } catch (err) {
+        console.warn("Backend saveAnalysisResult failed:", err);
+      }
+    }
     setSaving(false);
     toast.success("Progress saved");
   };
 
   const handleSubmit = async () => {
     setSubmitting(true);
-    await saveAnalysisMutation.mutateAsync({
-      sampleId: selectedSampleId,
-      results: rows.map((r) => ({
-        parameter: r.parameter,
-        observedValue: r.observedValue,
-        unit: r.unit,
-        verdict: (r.verdict || null) as "PASS" | "FAIL" | "OOS" | null,
-        remark: r.remarks || "",
-      })),
-    });
-    await submitAnalysisMutation.mutateAsync(selectedSampleId);
+    ANALYSIS_RESULTS[selectedSampleId] = rows;
+    const idx = SAMPLE_INTAKES.findIndex(
+      (s) => s.sampleId === selectedSampleId,
+    );
+    if (idx !== -1)
+      SAMPLE_INTAKES[idx] = { ...SAMPLE_INTAKES[idx], status: "SICReview" };
+
+    // Backend: submit analysis and advance to SICReview stage
+    if (actor && selectedSampleId) {
+      try {
+        const backendResults = rows.map((r) => ({
+          parameter: r.parameter,
+          observedValue: r.observedValue,
+          unit: r.unit,
+          verdict:
+            r.verdict === "PASS"
+              ? { __kind__: "pass" }
+              : r.verdict === "FAIL"
+                ? { __kind__: "fail" }
+                : { __kind__: "oos" },
+          remark: r.remarks || "",
+        }));
+        await (actor as any).saveAnalysisResult(
+          selectedSampleId,
+          backendResults,
+        );
+        await (actor as any).submitAnalysis(selectedSampleId);
+      } catch (err) {
+        console.warn("Backend submitAnalysis failed:", err);
+      }
+    }
 
     AUDIT_LOG.push({
       id: `al-${Date.now()}`,
@@ -309,7 +307,7 @@ export function Analysis({ sampleId: propSampleId }: AnalysisProps) {
         : "text-emerald-600";
 
   // Get specs for current sample (for method column)
-  const testSpecs = backendSample?.testSpecs || [];
+  const testSpecs = TEST_SPECS[selectedSampleId] || [];
 
   if (!sample) {
     return (
@@ -361,7 +359,7 @@ export function Analysis({ sampleId: propSampleId }: AnalysisProps) {
                         {s.sampleName}
                       </span>
                     </div>
-                    <StatusBadge status={toWorkflowStage(s.sampleStatus)} />
+                    <StatusBadge status={s.status} />
                   </button>
                 ))}
               </div>
@@ -375,7 +373,7 @@ export function Analysis({ sampleId: propSampleId }: AnalysisProps) {
   // Get the test spec entry for the current sample for method reference
   const specMap: Record<string, string> = {};
   for (const ts of testSpecs) {
-    specMap[ts.parameter] = ts.method;
+    specMap[ts.parameter] = ts.methodSop;
   }
 
   return (
@@ -951,14 +949,18 @@ export function Analysis({ sampleId: propSampleId }: AnalysisProps) {
                   ) : (
                     testSpecs.map((ts) => (
                       <div
-                        key={ts.parameter}
+                        key={ts.id}
                         className="flex items-start gap-3 text-xs"
                       >
                         <span className="font-mono text-slate-400 whitespace-nowrap">
-                          {ts.method}
+                          {ts.methodSop}
                         </span>
                         <span className="text-slate-600">{ts.parameter}</span>
-                        
+                        {ts.qaNotes && (
+                          <span className="text-amber-600 italic">
+                            — {ts.qaNotes}
+                          </span>
+                        )}
                       </div>
                     ))
                   )}

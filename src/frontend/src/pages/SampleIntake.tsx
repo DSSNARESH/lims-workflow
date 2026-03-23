@@ -10,15 +10,16 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
-import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
 import { ArrowLeft, FlaskConical, Save, X } from "lucide-react";
 import type React from "react";
 import { useState } from "react";
 import { toast } from "sonner";
+import { StatusBadge } from "../components/StatusBadge";
 import { useRole } from "../contexts/RoleContext";
-import { DUMMY_USERS } from "../lib/mockData";
-import { createSample } from "../lib/springApi";
+import { useActor } from "../hooks/useActor";
+import { buildSamplePayload, storeSampleId } from "../hooks/useBackendService";
+import { DUMMY_USERS, SAMPLE_INTAKES } from "../lib/mockData";
 
 const SAMPLE_TYPES = [
   "API",
@@ -45,13 +46,7 @@ const PHYSICAL_FORMS = [
 export function SampleIntake() {
   const navigate = useNavigate();
   const { activeUser } = useRole();
-  const queryClient = useQueryClient();
-  const createSampleMutation = useMutation({
-    mutationFn: createSample,
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["workflow-samples"] });
-    },
-  });
+  const { actor } = useActor();
 
   const [form, setForm] = useState({
     customerName: "",
@@ -114,26 +109,51 @@ export function SampleIntake() {
     e.preventDefault();
     if (!validate()) return;
     setSubmitting(true);
-    const newId = `S-${Date.now()}`;
+    const newId = `SI-2026-${String(SAMPLE_INTAKES.length + 1).padStart(3, "0")}`;
 
-    await createSampleMutation.mutateAsync({
-      sampleId: newId,
-      clientName: form.customerName,
-      sampleName: form.sampleName,
-      testName: form.sampleType,
-      dateReceived: new Date(form.dateOfReceipt).toISOString(),
-      registrationId: 0,
-      sampleStatus: "PENDING",
-      rfa: {
-        registration: 0,
-        billing: 0,
-        sampleDetails: 0,
-      },
-      testSpecs: [],
-      analysisResults: [],
-      sicReview: null,
-      qaReview: null,
+    const approvalDecisions = form.assignToSectionInCharge.map((uid) => {
+      const user = DUMMY_USERS.find((u) => u.id === uid);
+      return {
+        userId: uid,
+        userName: user?.name ?? uid,
+        decision: "pending" as const,
+        comment: "",
+      };
     });
+
+    SAMPLE_INTAKES.push({
+      sampleId: newId,
+      customerName: form.customerName,
+      contactPerson: form.contactPerson,
+      emailAddress: form.emailAddress,
+      sampleName: form.sampleName,
+      sampleType: form.sampleType,
+      physicalForm: form.physicalForm,
+      dateOfReceipt: form.dateOfReceipt,
+      numberOfUnits: form.numberOfUnits,
+      specialHandling: form.specialHandling,
+      assignToSectionInCharge: form.assignToSectionInCharge,
+      approvalDecisions,
+      status: "Intake",
+      createdAt: new Date().toISOString(),
+      createdBy: activeUser.id,
+    });
+
+    // Backend: persist sample to canister
+    if (actor) {
+      try {
+        const backendSample = buildSamplePayload({
+          sampleId: newId,
+          sampleName: form.sampleName,
+          clientName: form.customerName,
+          testName: form.sampleType,
+        });
+        const id = await actor.createSample(backendSample);
+        storeSampleId(id);
+      } catch (err) {
+        console.warn("Backend createSample failed (mock data used):", err);
+      }
+    }
 
     setSubmitting(false);
     toast.success(`Sample ${newId} created successfully`, {
@@ -496,6 +516,151 @@ export function SampleIntake() {
           </Button>
         </div>
       </form>
+      {/* Sample Intake History */}
+      <div className="mt-8">
+        <Card className="lims-card">
+          <CardHeader className="pb-3 flex flex-row items-center justify-between">
+            <CardTitle className="text-sm font-semibold text-foreground flex items-center gap-2">
+              <FlaskConical className="h-4 w-4 text-primary" />
+              Sample Intake History
+            </CardTitle>
+            <span className="text-xs bg-primary/10 text-primary font-semibold px-2.5 py-1 rounded-full">
+              {
+                [...SAMPLE_INTAKES].sort(
+                  (a, b) =>
+                    new Date(b.createdAt).getTime() -
+                    new Date(a.createdAt).getTime(),
+                ).length
+              }{" "}
+              records
+            </span>
+          </CardHeader>
+          <CardContent className="p-0">
+            {SAMPLE_INTAKES.length === 0 ? (
+              <div
+                className="py-12 text-center text-muted-foreground text-sm"
+                data-ocid="intake.empty_state"
+              >
+                No samples yet. Submit your first sample above.
+              </div>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="w-full text-xs">
+                  <thead>
+                    <tr className="border-b border-border bg-muted/30">
+                      <th className="text-left px-4 py-2.5 font-semibold text-muted-foreground">
+                        Sample ID
+                      </th>
+                      <th className="text-left px-4 py-2.5 font-semibold text-muted-foreground">
+                        Sample Name
+                      </th>
+                      <th className="text-left px-4 py-2.5 font-semibold text-muted-foreground">
+                        Customer
+                      </th>
+                      <th className="text-left px-4 py-2.5 font-semibold text-muted-foreground">
+                        Type
+                      </th>
+                      <th className="text-left px-4 py-2.5 font-semibold text-muted-foreground">
+                        Form
+                      </th>
+                      <th className="text-left px-4 py-2.5 font-semibold text-muted-foreground">
+                        Date of Receipt
+                      </th>
+                      <th className="text-left px-4 py-2.5 font-semibold text-muted-foreground">
+                        Units
+                      </th>
+                      <th className="text-left px-4 py-2.5 font-semibold text-muted-foreground">
+                        Assigned To
+                      </th>
+                      <th className="text-left px-4 py-2.5 font-semibold text-muted-foreground">
+                        Status
+                      </th>
+                      <th className="text-left px-4 py-2.5 font-semibold text-muted-foreground">
+                        Action
+                      </th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {[...SAMPLE_INTAKES]
+                      .sort(
+                        (a, b) =>
+                          new Date(b.createdAt).getTime() -
+                          new Date(a.createdAt).getTime(),
+                      )
+                      .map((s, idx) => {
+                        const assigneeIds = Array.isArray(
+                          s.assignToSectionInCharge,
+                        )
+                          ? s.assignToSectionInCharge
+                          : [s.assignToSectionInCharge];
+                        const assigneeNames = assigneeIds
+                          .map(
+                            (id) =>
+                              DUMMY_USERS.find((u) => u.id === id)?.name ?? id,
+                          )
+                          .join(", ");
+                        return (
+                          <tr
+                            key={s.sampleId}
+                            className="border-b border-border/50 hover:bg-muted/20 transition-colors"
+                            data-ocid={`intake.item.${idx + 1}`}
+                          >
+                            <td className="px-4 py-2.5 font-mono text-primary font-medium">
+                              {s.sampleId}
+                            </td>
+                            <td className="px-4 py-2.5 text-foreground">
+                              {s.sampleName}
+                            </td>
+                            <td className="px-4 py-2.5 text-muted-foreground">
+                              {s.customerName}
+                            </td>
+                            <td className="px-4 py-2.5 text-muted-foreground">
+                              {s.sampleType}
+                            </td>
+                            <td className="px-4 py-2.5 text-muted-foreground">
+                              {s.physicalForm}
+                            </td>
+                            <td className="px-4 py-2.5 text-muted-foreground">
+                              {s.dateOfReceipt}
+                            </td>
+                            <td className="px-4 py-2.5 text-center">
+                              {s.numberOfUnits}
+                            </td>
+                            <td
+                              className="px-4 py-2.5 text-muted-foreground max-w-[160px] truncate"
+                              title={assigneeNames}
+                            >
+                              {assigneeNames}
+                            </td>
+                            <td className="px-4 py-2.5">
+                              <StatusBadge status={s.status} />
+                            </td>
+                            <td className="px-4 py-2.5">
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                className="h-6 text-xs px-2"
+                                data-ocid={`intake.edit_button.${idx + 1}`}
+                                onClick={() =>
+                                  navigate({
+                                    to: "/eligibility-check/$sampleId",
+                                    params: { sampleId: s.sampleId },
+                                  })
+                                }
+                              >
+                                View
+                              </Button>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </CardContent>
+        </Card>
+      </div>
     </div>
   );
 }

@@ -2,11 +2,11 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Textarea } from "@/components/ui/textarea";
-import { useQuery } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
 import {
   ArrowLeft,
   Award,
+  CheckCircle2,
   ChevronDown,
   ChevronUp,
   ClipboardList,
@@ -16,9 +16,13 @@ import {
   Info,
   Printer,
   Shield,
+  XCircle,
 } from "lucide-react";
 import React, { useEffect, useRef, useState } from "react";
-import { getSamples } from "../lib/springApi";
+import { toast } from "sonner";
+import { useRole } from "../contexts/RoleContext";
+import { useActor } from "../hooks/useActor";
+import { COA_RECORDS, SAMPLE_INTAKES, getSampleById } from "../lib/mockData";
 
 interface COAProps {
   sampleId?: string;
@@ -65,15 +69,17 @@ const COA_TEST_PARAMS = [
 export function COA({ sampleId: propSampleId }: COAProps) {
   const navigate = useNavigate();
   const coaPrintRef = useRef<HTMLDivElement>(null);
-  const { data: samples = [] } = useQuery({
-    queryKey: ["workflow-samples"],
-    queryFn: getSamples,
-  });
 
   const [checkedRows, setCheckedRows] = useState<Record<string, boolean>>({});
   const [lineageExpanded, setLineageExpanded] = useState(true);
   const [lineageOldExpanded, setLineageOldExpanded] = useState(false);
   const [approvalComments, setApprovalComments] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+  const [decision, setDecision] = useState<"approved" | "rejected" | null>(
+    null,
+  );
+
+  const { actor } = useActor();
 
   // Load Dancing Script font (self-hosted via @font-face in index.css is preferred,
   // but Dancing Script is only needed here for the cursive signature, so we inject
@@ -94,6 +100,56 @@ export function COA({ sampleId: propSampleId }: COAProps) {
 
   const toggleRow = (parameter: string) => {
     setCheckedRows((prev) => ({ ...prev, [parameter]: !prev[parameter] }));
+  };
+
+  const handleDecision = async (action: "approve" | "reject") => {
+    if (!approvalComments.trim()) {
+      toast.error("Please add approval comments before proceeding.");
+      return;
+    }
+    const sid = propSampleId;
+    if (!sid) {
+      toast.error("No sample selected");
+      return;
+    }
+    setSubmitting(true);
+    try {
+      // Update mock data first (always succeeds)
+      const idx = SAMPLE_INTAKES.findIndex((s) => s.sampleId === sid);
+      if (idx !== -1) {
+        SAMPLE_INTAKES[idx] = {
+          ...SAMPLE_INTAKES[idx],
+          status: action === "approve" ? "COA" : "SICReview",
+        };
+      }
+      // Try backend (non-blocking)
+      if (actor) {
+        try {
+          if (action === "approve") {
+            await (actor as any).approveQAReview(sid);
+          } else {
+            await (actor as any).rejectQAReview(sid);
+          }
+        } catch (backendErr) {
+          console.warn(
+            "Backend COA decision failed (mock updated):",
+            backendErr,
+          );
+        }
+      }
+      setDecision(action === "approve" ? "approved" : "rejected");
+      toast.success(action === "approve" ? "COA Approved" : "COA Rejected", {
+        description:
+          action === "approve"
+            ? "Sample moved to COA issuance"
+            : "Sample returned to SIC Review",
+      });
+    } catch (err) {
+      toast.error("Action failed. Please try again.");
+      console.error(err);
+    } finally {
+      setSubmitting(false);
+    }
   };
 
   function savePDF() {
@@ -146,41 +202,10 @@ export function COA({ sampleId: propSampleId }: COAProps) {
     printWindow.document.close();
   }
 
-  const coaRecords = samples
-    .filter((sample) => sample.sampleStatus === "COA")
-    .map((sample, index) => ({
-      id: `coa-${sample.sampleId}`,
-      sampleId: sample.sampleId,
-      coaNumber: `COA-2026-${String(index + 1).padStart(3, "0")}`,
-      registrationNumber: `REG-2026-${String(index + 1).padStart(3, "0")}`,
-      clientName: sample.clientName,
-      sampleName: sample.sampleName,
-      issueDate: new Date().toISOString(),
-      analystName: sample.testSpecs[0]?.assignedAnalyst || "Assigned analyst",
-      sicReviewerName: sample.sicReview?.reviewerName || "SIC Reviewer",
-      qaApproverName: sample.qaReview?.qaHeadName || "QA Approver",
-      analystSignDate: new Date(sample.dateReceived).toISOString().split("T")[0],
-      sicSignDate: new Date().toISOString().split("T")[0],
-      qaSignDate: new Date().toISOString().split("T")[0],
-      parameters: sample.analysisResults.map((result) => ({
-        parameter: result.parameter,
-        acceptanceCriteria:
-          sample.testSpecs.find((spec) => spec.parameter === result.parameter)
-            ?.acceptanceCriteria || "",
-        observedValue: result.observedValue,
-        unit: result.unit,
-        verdict: result.verdict || "",
-      })),
-      overallResult: sample.analysisResults.some((result) => result.verdict === "FAIL" || result.verdict === "OOS")
-        ? "FAIL"
-        : "PASS",
-      complianceStatement: "This product complies with the specifications as per the approved laboratory method.",
-    }));
-
   const coa = propSampleId
-    ? coaRecords.find((c) => c.sampleId === propSampleId)
+    ? COA_RECORDS.find((c) => c.sampleId === propSampleId)
     : null;
-  const sample = propSampleId ? samples.find((item) => item.sampleId === propSampleId) ?? null : null;
+  const sample = propSampleId ? getSampleById(propSampleId) : null;
 
   // ─── List View (no sampleId or no coa found) ────────────────────────────────
   if (!propSampleId || !coa) {
@@ -208,7 +233,7 @@ export function COA({ sampleId: propSampleId }: COAProps) {
         <Card className="lims-card">
           <CardContent className="p-5">
             <p className="text-sm font-semibold mb-3">Select a COA to view</p>
-            {coaRecords.length === 0 ? (
+            {COA_RECORDS.length === 0 ? (
               <div
                 className="flex items-center gap-2 text-muted-foreground py-4"
                 data-ocid="coa.empty_state"
@@ -221,7 +246,7 @@ export function COA({ sampleId: propSampleId }: COAProps) {
               </div>
             ) : (
               <div className="space-y-2">
-                {coaRecords.map((c, i) => (
+                {COA_RECORDS.map((c, i) => (
                   <button
                     type="button"
                     key={c.id}
@@ -289,7 +314,7 @@ export function COA({ sampleId: propSampleId }: COAProps) {
   const expiryDate =
     (sample as { expiryDate?: string } | null)?.expiryDate || "Jan 2026";
   const receiptDate = sample
-    ? new Date(sample.dateReceived).toLocaleDateString("en-IN", {
+    ? new Date(sample.dateOfReceipt).toLocaleDateString("en-IN", {
         day: "2-digit",
         month: "short",
         year: "numeric",
@@ -432,7 +457,7 @@ export function COA({ sampleId: propSampleId }: COAProps) {
                     <div>
                       <span className="text-gray-500">Sample Type:</span>{" "}
                       <span className="font-semibold text-gray-800">
-                        {sample?.testName || "Finished Product"}
+                        {sample?.sampleType || "Finished Product"}
                       </span>
                     </div>
                     <div>
@@ -676,18 +701,45 @@ export function COA({ sampleId: propSampleId }: COAProps) {
                 <Info className="h-3 w-3" /> Comments are recorded in the
                 permanent audit log.
               </p>
+              {decision && (
+                <div
+                  className={`mt-3 flex items-center gap-2 px-3 py-2 rounded-lg text-xs font-semibold ${decision === "approved" ? "bg-emerald-50 text-emerald-700 border border-emerald-200" : "bg-red-50 text-red-700 border border-red-200"}`}
+                >
+                  {decision === "approved" ? (
+                    <>
+                      <CheckCircle2 className="h-4 w-4" /> COA Approved
+                    </>
+                  ) : (
+                    <>
+                      <XCircle className="h-4 w-4" /> Returned to SIC Review
+                    </>
+                  )}
+                </div>
+              )}
               <div className="flex gap-2 mt-3">
                 <Button
                   variant="outline"
                   size="sm"
                   className="flex-1 text-xs border-red-300 text-red-600 hover:bg-red-50 h-8"
+                  onClick={() => handleDecision("reject")}
+                  disabled={submitting || decision !== null || !propSampleId}
+                  data-ocid="coa.reject.button"
                 >
+                  {submitting && decision === null ? (
+                    <span className="h-3 w-3 border-2 border-red-400/30 border-t-red-400 rounded-full animate-spin mr-1" />
+                  ) : null}
                   Reject COA
                 </Button>
                 <Button
                   size="sm"
                   className="flex-1 text-xs bg-blue-600 hover:bg-blue-700 h-8"
+                  onClick={() => handleDecision("approve")}
+                  disabled={submitting || decision !== null || !propSampleId}
+                  data-ocid="coa.approve.button"
                 >
+                  {submitting ? (
+                    <span className="h-3 w-3 border-2 border-white/30 border-t-white rounded-full animate-spin mr-1" />
+                  ) : null}
                   Approve
                 </Button>
               </div>

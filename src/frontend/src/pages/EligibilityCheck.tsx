@@ -3,7 +3,6 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
 import {
   AlertTriangle,
@@ -19,8 +18,14 @@ import React, { useState } from "react";
 import { toast } from "sonner";
 import { StatusBadge } from "../components/StatusBadge";
 import { useRole } from "../contexts/RoleContext";
-import { AUDIT_LOG, DUMMY_USERS, type SICApprovalRecord } from "../lib/mockData";
-import { getSamples, toWorkflowStage, updateSampleStage } from "../lib/springApi";
+import { useActor } from "../hooks/useActor";
+import {
+  AUDIT_LOG,
+  DUMMY_USERS,
+  SAMPLE_INTAKES,
+  type SICApprovalRecord,
+  getSampleById,
+} from "../lib/mockData";
 
 const ACCEPTANCE_CHECKLIST = [
   {
@@ -68,18 +73,7 @@ export function EligibilityCheck({
 }: EligibilityCheckProps) {
   const navigate = useNavigate();
   const { activeUser } = useRole();
-  const queryClient = useQueryClient();
-  const { data: samples = [] } = useQuery({
-    queryKey: ["workflow-samples"],
-    queryFn: getSamples,
-  });
-  const updateStageMutation = useMutation({
-    mutationFn: ({ sampleId, stage }: { sampleId: string; stage: "REGISTRATION" | "HOLD" }) =>
-      updateSampleStage(sampleId, stage),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["workflow-samples"] });
-    },
-  });
+  const { actor } = useActor();
 
   const [selectedSampleId, setSelectedSampleId] = useState(propSampleId || "");
   const [acceptanceChecked, setAcceptanceChecked] = useState<
@@ -98,11 +92,13 @@ export function EligibilityCheck({
   );
   const [submitting, setSubmitting] = useState(false);
 
-  const eligibleSamples = samples.filter((sample) => sample.sampleStatus === "PENDING");
-  const sample =
-    selectedSampleId
-      ? samples.find((item) => item.sampleId === selectedSampleId) ?? null
-      : null;
+  const eligibleSamples = SAMPLE_INTAKES.filter(
+    (s) =>
+      s.status === "Intake" ||
+      s.status === "EligibilityCheck" ||
+      s.status === "PendingApproval",
+  );
+  const sample = selectedSampleId ? getSampleById(selectedSampleId) : null;
 
   const allAcceptanceChecked = ACCEPTANCE_CHECKLIST.every(
     (item) => acceptanceChecked[item.id],
@@ -115,12 +111,23 @@ export function EligibilityCheck({
   // Derive assignee list: support both string and string[] for backwards compat
   const getAssignees = (): SICApprovalRecord[] => {
     if (!sample) return [];
-    return DUMMY_USERS.filter((user) => user.role === "sectionInCharge").map((user) => ({
-      userId: user.id,
-      userName: user.name,
-      decision: user.id === activeUser.id ? "pending" : "pending",
-      comment: "",
-    }));
+    // If approvalDecisions exist, use them
+    if (sample.approvalDecisions && sample.approvalDecisions.length > 0) {
+      return sample.approvalDecisions;
+    }
+    // Legacy: single string assignee
+    const ids = Array.isArray(sample.assignToSectionInCharge)
+      ? sample.assignToSectionInCharge
+      : [sample.assignToSectionInCharge];
+    return ids.map((uid) => {
+      const user = DUMMY_USERS.find((u) => u.id === uid);
+      return {
+        userId: uid,
+        userName: user?.name ?? uid,
+        decision: "pending" as const,
+        comment: "",
+      };
+    });
   };
 
   const assignees = getAssignees();
@@ -131,8 +138,10 @@ export function EligibilityCheck({
 
   // Compute aggregate status from decisions
   const computeAggregateStatus = (decisions: SICApprovalRecord[]) => {
-    if (decisions.some((d) => d.decision === "hold" || d.decision === "rejected")) return "OnHold";
-    if (decisions.every((d) => d.decision === "approved")) return "Registration";
+    if (decisions.some((d) => d.decision === "hold")) return "OnHold";
+    if (decisions.some((d) => d.decision === "rejected")) return "Rejected";
+    if (decisions.every((d) => d.decision === "approved"))
+      return "Registration";
     return "PendingApproval";
   };
 
@@ -140,6 +149,7 @@ export function EligibilityCheck({
     if (!sample) return;
     const comment = decisionComments[activeUser.id] ?? "";
 
+    // For hold/reject, comment is required
     if ((decision === "hold" || decision === "rejected") && !comment.trim()) {
       setCommentErrors((prev) => ({
         ...prev,
@@ -147,56 +157,101 @@ export function EligibilityCheck({
       }));
       return;
     }
-
     setCommentErrors((prev) => ({ ...prev, [activeUser.id]: "" }));
+
     setSubmitting(true);
 
-    const updatedDecisions = assignees.map((d) =>
-      d.userId === activeUser.id
-        ? {
-            ...d,
-            decision,
-            comment,
-            decidedAt: new Date().toISOString(),
-          }
-        : d,
+    const idx = SAMPLE_INTAKES.findIndex(
+      (s) => s.sampleId === selectedSampleId,
     );
+    if (idx !== -1) {
+      // Build updated approval decisions
+      const currentDecisions: SICApprovalRecord[] =
+        SAMPLE_INTAKES[idx].approvalDecisions ?? assignees;
 
-    const newStatus = computeAggregateStatus(updatedDecisions);
+      const updatedDecisions = currentDecisions.map((d) =>
+        d.userId === activeUser.id
+          ? {
+              ...d,
+              decision,
+              comment,
+              decidedAt: new Date().toISOString(),
+            }
+          : d,
+      );
 
-    AUDIT_LOG.push({
-      id: `al-${Date.now()}`,
-      timestamp: new Date().toISOString(),
-      userId: activeUser.id,
-      userName: activeUser.name,
-      action: decision.toUpperCase(),
-      entity: "EligibilityCheck",
-      entityId: selectedSampleId,
-      details: comment
-        ? `${activeUser.name} marked ${decision}: ${comment}`
-        : `${activeUser.name} marked ${decision}`,
-    });
+      const newStatus = computeAggregateStatus(updatedDecisions);
 
-    await updateStageMutation.mutateAsync({
-      sampleId: selectedSampleId,
-      stage: newStatus === "Registration" ? "REGISTRATION" : "HOLD",
-    });
+      SAMPLE_INTAKES[idx] = {
+        ...SAMPLE_INTAKES[idx],
+        approvalDecisions: updatedDecisions,
+        status: newStatus,
+      };
 
-    setSubmitting(false);
-
-    if (newStatus === "Registration") {
-      toast.success("Sample marked eligible", {
-        description: "Proceeding to Registration stage",
+      AUDIT_LOG.push({
+        id: `al-${Date.now()}`,
+        timestamp: new Date().toISOString(),
+        userId: activeUser.id,
+        userName: activeUser.name,
+        action: decision.toUpperCase(),
+        entity: "EligibilityCheck",
+        entityId: selectedSampleId,
+        details: comment
+          ? `${activeUser.name} marked ${decision}: ${comment}`
+          : `${activeUser.name} marked ${decision}`,
       });
-      navigate({
-        to: "/registration/$sampleId",
-        params: { sampleId: selectedSampleId },
-      });
+
+      // Backend: submit eligibility vote
+      if (actor) {
+        try {
+          await actor.submitEligibilityVote(
+            selectedSampleId,
+            decision === "approved",
+            comment,
+            [],
+          );
+        } catch (err) {
+          console.warn("Backend submitEligibilityVote failed:", err);
+        }
+      }
+
+      setSubmitting(false);
+
+      if (newStatus === "Registration") {
+        toast.success("All assignees approved — Sample is now Eligible", {
+          description: "Proceeding to Registration stage",
+        });
+        navigate({
+          to: "/registration/$sampleId",
+          params: { sampleId: selectedSampleId },
+        });
+      } else if (newStatus === "OnHold") {
+        toast.warning("Sample placed On Hold", {
+          description: `${activeUser.name} placed the sample on hold`,
+        });
+        navigate({ to: "/" });
+      } else if (newStatus === "Rejected") {
+        toast.error("Sample Rejected", {
+          description: `${activeUser.name} rejected this sample`,
+        });
+        navigate({ to: "/" });
+      } else {
+        // PendingApproval
+        const updatedForCount = assignees.map((a) =>
+          a.userId === activeUser.id ? { ...a, decision } : a,
+        );
+        const stillPending = updatedForCount.filter(
+          (d) => d.decision === "pending",
+        ).length;
+        toast.info("Your decision recorded — awaiting other approvals", {
+          description: `${stillPending} approval(s) still pending`,
+        });
+        // Refresh view
+        setSelectedSampleId("");
+        setTimeout(() => setSelectedSampleId(selectedSampleId), 50);
+      }
     } else {
-      toast.warning("Sample moved to hold", {
-        description: comment || "Eligibility review did not pass.",
-      });
-      navigate({ to: "/" });
+      setSubmitting(false);
     }
   };
 
@@ -279,10 +334,10 @@ export function EligibilityCheck({
                         {s.sampleName}
                       </span>
                       <span className="text-xs text-muted-foreground">
-                        {s.clientName}
+                        {s.customerName}
                       </span>
                     </div>
-                    <StatusBadge status={toWorkflowStage(s.sampleStatus)} />
+                    <StatusBadge status={s.status} />
                   </button>
                 ))}
               </div>
@@ -311,11 +366,11 @@ export function EligibilityCheck({
                   </div>
                   <div>
                     <p className="text-xs text-muted-foreground">Customer</p>
-                    <p className="text-sm">{sample.clientName}</p>
+                    <p className="text-sm">{sample.customerName}</p>
                   </div>
                   <div>
                     <p className="text-xs text-muted-foreground">Status</p>
-                    <StatusBadge status={toWorkflowStage(sample.sampleStatus)} />
+                    <StatusBadge status={sample.status} />
                   </div>
                 </div>
                 <Button
@@ -609,6 +664,165 @@ export function EligibilityCheck({
           )}
         </>
       )}
+
+      {/* Eligibility History Table */}
+      <div className="mt-8">
+        <Card className="lims-card">
+          <CardHeader className="pb-3 flex flex-row items-center justify-between">
+            <CardTitle className="text-sm font-semibold text-foreground flex items-center gap-2">
+              All Samples — Eligibility History
+            </CardTitle>
+            <span className="text-xs bg-primary/10 text-primary font-semibold px-2.5 py-1 rounded-full">
+              {SAMPLE_INTAKES.length} records
+            </span>
+          </CardHeader>
+          <CardContent className="p-0">
+            {SAMPLE_INTAKES.length === 0 ? (
+              <div
+                className="py-12 text-center text-muted-foreground text-sm"
+                data-ocid="eligibility.empty_state"
+              >
+                No samples found.
+              </div>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="w-full text-xs">
+                  <thead>
+                    <tr className="border-b border-border bg-muted/30">
+                      <th className="text-left px-4 py-2.5 font-semibold text-muted-foreground">
+                        Sample ID
+                      </th>
+                      <th className="text-left px-4 py-2.5 font-semibold text-muted-foreground">
+                        Sample Name
+                      </th>
+                      <th className="text-left px-4 py-2.5 font-semibold text-muted-foreground">
+                        Customer
+                      </th>
+                      <th className="text-left px-4 py-2.5 font-semibold text-muted-foreground">
+                        Type
+                      </th>
+                      <th className="text-left px-4 py-2.5 font-semibold text-muted-foreground">
+                        Date of Receipt
+                      </th>
+                      <th className="text-left px-4 py-2.5 font-semibold text-muted-foreground">
+                        Status
+                      </th>
+                      <th className="text-left px-4 py-2.5 font-semibold text-muted-foreground">
+                        Assignees
+                      </th>
+                      <th className="text-left px-4 py-2.5 font-semibold text-muted-foreground">
+                        Decision
+                      </th>
+                      <th className="text-left px-4 py-2.5 font-semibold text-muted-foreground">
+                        Action
+                      </th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {[...SAMPLE_INTAKES]
+                      .sort(
+                        (a, b) =>
+                          new Date(b.createdAt).getTime() -
+                          new Date(a.createdAt).getTime(),
+                      )
+                      .map((s, idx) => {
+                        const assignees =
+                          s.approvalDecisions && s.approvalDecisions.length > 0
+                            ? s.approvalDecisions
+                            : (Array.isArray(s.assignToSectionInCharge)
+                                ? s.assignToSectionInCharge
+                                : [s.assignToSectionInCharge]
+                              ).map((id) => {
+                                const u = DUMMY_USERS.find((u) => u.id === id);
+                                return {
+                                  userId: id,
+                                  userName: u?.name ?? id,
+                                  decision: "pending" as const,
+                                };
+                              });
+                        const approvedCount = assignees.filter(
+                          (a) => a.decision === "approved",
+                        ).length;
+                        const totalCount = assignees.length;
+                        return (
+                          <tr
+                            key={s.sampleId}
+                            className="border-b border-border/50 hover:bg-muted/20 transition-colors"
+                            data-ocid={`eligibility.item.${idx + 1}`}
+                          >
+                            <td className="px-4 py-2.5 font-mono text-primary font-medium">
+                              {s.sampleId}
+                            </td>
+                            <td className="px-4 py-2.5 text-foreground">
+                              {s.sampleName}
+                            </td>
+                            <td className="px-4 py-2.5 text-muted-foreground">
+                              {s.customerName}
+                            </td>
+                            <td className="px-4 py-2.5 text-muted-foreground">
+                              {s.sampleType}
+                            </td>
+                            <td className="px-4 py-2.5 text-muted-foreground">
+                              {s.dateOfReceipt}
+                            </td>
+                            <td className="px-4 py-2.5">
+                              <StatusBadge status={s.status} />
+                            </td>
+                            <td className="px-4 py-2.5">
+                              <div className="flex flex-wrap gap-1">
+                                {assignees.map((a) => (
+                                  <span
+                                    key={a.userId}
+                                    className={`inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium
+                                      ${
+                                        a.decision === "approved"
+                                          ? "bg-emerald-100 text-emerald-700"
+                                          : a.decision === "rejected"
+                                            ? "bg-red-100 text-red-700"
+                                            : a.decision === "hold"
+                                              ? "bg-amber-100 text-amber-700"
+                                              : "bg-slate-100 text-slate-600"
+                                      }`}
+                                  >
+                                    {a.userName.split(" ")[0]}
+                                  </span>
+                                ))}
+                              </div>
+                            </td>
+                            <td className="px-4 py-2.5">
+                              <span
+                                className={`text-xs font-medium ${approvedCount === totalCount ? "text-emerald-600" : "text-amber-600"}`}
+                              >
+                                {approvedCount}/{totalCount} approved
+                              </span>
+                            </td>
+                            <td className="px-4 py-2.5">
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                className="h-6 text-xs px-2"
+                                data-ocid={`eligibility.edit_button.${idx + 1}`}
+                                onClick={() => {
+                                  setSelectedSampleId(s.sampleId);
+                                  window.scrollTo({
+                                    top: 0,
+                                    behavior: "smooth",
+                                  });
+                                }}
+                              >
+                                Open
+                              </Button>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </CardContent>
+        </Card>
+      </div>
     </div>
   );
 }
