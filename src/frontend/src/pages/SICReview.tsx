@@ -1,6 +1,7 @@
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Textarea } from "@/components/ui/textarea";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
 import {
   ArrowLeft,
@@ -18,13 +19,8 @@ import React, { useState } from "react";
 import { toast } from "sonner";
 import { StatusBadge } from "../components/StatusBadge";
 import { useRole } from "../contexts/RoleContext";
-import { useActor } from "../hooks/useActor";
-import {
-  ANALYSIS_RESULTS,
-  AUDIT_LOG,
-  SAMPLE_INTAKES,
-  getSampleById,
-} from "../lib/mockData";
+import { AUDIT_LOG } from "../lib/mockData";
+import { approveSicReview, getSamples, rejectSicReview, saveSicReview, toWorkflowStage } from "../lib/springApi";
 
 interface SICReviewProps {
   sampleId?: string;
@@ -71,12 +67,46 @@ const COA_TEST_PARAMS = [
 export function SICReview({ sampleId: propSampleId }: SICReviewProps) {
   const navigate = useNavigate();
   const { activeUser } = useRole();
-  const { actor } = useActor();
+  const queryClient = useQueryClient();
+  const { data: samples = [] } = useQuery({
+    queryKey: ["workflow-samples"],
+    queryFn: getSamples,
+  });
+  const saveReviewMutation = useMutation({
+    mutationFn: ({ sampleId, review }: { sampleId: string; review: Parameters<typeof saveSicReview>[1] }) =>
+      saveSicReview(sampleId, review),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["workflow-samples"] }),
+  });
+  const approveMutation = useMutation({
+    mutationFn: approveSicReview,
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["workflow-samples"] }),
+  });
+  const rejectMutation = useMutation({
+    mutationFn: rejectSicReview,
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["workflow-samples"] }),
+  });
 
   const [selectedSampleId, setSelectedSampleId] = useState(propSampleId || "");
-  const sample = selectedSampleId ? getSampleById(selectedSampleId) : null;
-  const sicSamples = SAMPLE_INTAKES.filter((s) => s.status === "SICReview");
-  const results = ANALYSIS_RESULTS[selectedSampleId] || [];
+  const backendSample = selectedSampleId
+    ? samples.find((item) => item.sampleId === selectedSampleId) ?? null
+    : null;
+  const sample = backendSample
+    ? {
+        sampleId: backendSample.sampleId,
+        sampleName: backendSample.sampleName,
+        customerName: backendSample.clientName,
+        status: toWorkflowStage(backendSample.sampleStatus),
+      }
+    : null;
+  const sicSamples = samples.filter((item) => item.sampleStatus === "SIC_REVIEW");
+  const results = backendSample?.analysisResults.map((result) => ({
+    parameter: result.parameter,
+    acceptanceCriteria:
+      backendSample.testSpecs.find((spec) => spec.parameter === result.parameter)
+        ?.acceptanceCriteria || "",
+    observedValue: result.observedValue,
+    verdict: result.verdict || "",
+  })) || [];
 
   const [approvalComments, setApprovalComments] = useState("");
   const [submitting, setSubmitting] = useState(false);
@@ -97,15 +127,6 @@ export function SICReview({ sampleId: propSampleId }: SICReviewProps) {
     setCommentsError("");
     setSubmitting(true);
 
-    const idx = SAMPLE_INTAKES.findIndex(
-      (s) => s.sampleId === selectedSampleId,
-    );
-    if (idx !== -1) {
-      SAMPLE_INTAKES[idx] = {
-        ...SAMPLE_INTAKES[idx],
-        status: decision === "approve" ? "QAReview" : "Analysis",
-      };
-    }
     AUDIT_LOG.push({
       id: `al-${Date.now()}`,
       timestamp: new Date().toISOString(),
@@ -120,27 +141,24 @@ export function SICReview({ sampleId: propSampleId }: SICReviewProps) {
           : `Returned to analyst by ${activeUser.name}. Reason: ${approvalComments}`,
     });
 
-    // Backend: save SIC review and advance stage
-    if (actor && selectedSampleId) {
-      try {
-        const flagged = Object.entries(checkedRows)
-          .filter(([, checked]) => checked)
-          .map((_, i) => BigInt(i));
-        const review = {
-          reviewerName: activeUser.name,
-          decision: decision === "approve",
-          comments: approvalComments,
-          flaggedRows: flagged,
-        };
-        await (actor as any).saveSICReview(selectedSampleId, review);
-        if (decision === "approve") {
-          await (actor as any).approveSICReview(selectedSampleId);
-        } else {
-          await (actor as any).rejectSICReview(selectedSampleId);
-        }
-      } catch (err) {
-        console.warn("Backend SICReview failed:", err);
-      }
+    const flagged = Object.entries(checkedRows)
+      .filter(([, checked]) => checked)
+      .map(([_, __], index) => index);
+
+    await saveReviewMutation.mutateAsync({
+      sampleId: selectedSampleId,
+      review: {
+        reviewerName: activeUser.name,
+        decision: decision === "approve",
+        comments: approvalComments,
+        flaggedRows: flagged,
+      },
+    });
+
+    if (decision === "approve") {
+      await approveMutation.mutateAsync(selectedSampleId);
+    } else {
+      await rejectMutation.mutateAsync(selectedSampleId);
     }
 
     setSubmitting(false);
@@ -210,7 +228,7 @@ export function SICReview({ sampleId: propSampleId }: SICReviewProps) {
                     </span>
                     <span className="text-sm font-medium">{s.sampleName}</span>
                   </div>
-                  <StatusBadge status={s.status} />
+                  <StatusBadge status={toWorkflowStage(s.sampleStatus)} />
                 </button>
               ))}
             </div>

@@ -1,6 +1,7 @@
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Textarea } from "@/components/ui/textarea";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
 import {
   ArrowLeft,
@@ -18,15 +19,8 @@ import React, { useState } from "react";
 import { toast } from "sonner";
 import { StatusBadge } from "../components/StatusBadge";
 import { useRole } from "../contexts/RoleContext";
-import { useActor } from "../hooks/useActor";
-import {
-  ANALYSIS_RESULTS,
-  AUDIT_LOG,
-  type COARecord,
-  COA_RECORDS,
-  SAMPLE_INTAKES,
-  getSampleById,
-} from "../lib/mockData";
+import { AUDIT_LOG } from "../lib/mockData";
+import { approveQaReview, getSamples, rejectQaReview, saveQaReview, toWorkflowStage } from "../lib/springApi";
 
 interface QAReviewProps {
   sampleId?: string;
@@ -73,12 +67,47 @@ const COA_TEST_PARAMS = [
 export function QAReview({ sampleId: propSampleId }: QAReviewProps) {
   const navigate = useNavigate();
   const { activeUser } = useRole();
-  const { actor } = useActor();
+  const queryClient = useQueryClient();
+  const { data: samples = [] } = useQuery({
+    queryKey: ["workflow-samples"],
+    queryFn: getSamples,
+  });
+  const saveReviewMutation = useMutation({
+    mutationFn: ({ sampleId, review }: { sampleId: string; review: Parameters<typeof saveQaReview>[1] }) =>
+      saveQaReview(sampleId, review),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["workflow-samples"] }),
+  });
+  const approveMutation = useMutation({
+    mutationFn: approveQaReview,
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["workflow-samples"] }),
+  });
+  const rejectMutation = useMutation({
+    mutationFn: rejectQaReview,
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["workflow-samples"] }),
+  });
 
   const [selectedSampleId, setSelectedSampleId] = useState(propSampleId || "");
-  const sample = selectedSampleId ? getSampleById(selectedSampleId) : null;
-  const qaSamples = SAMPLE_INTAKES.filter((s) => s.status === "QAReview");
-  const results = ANALYSIS_RESULTS[selectedSampleId] || [];
+  const backendSample = selectedSampleId
+    ? samples.find((item) => item.sampleId === selectedSampleId) ?? null
+    : null;
+  const sample = backendSample
+    ? {
+        sampleId: backendSample.sampleId,
+        sampleName: backendSample.sampleName,
+        customerName: backendSample.clientName,
+        status: toWorkflowStage(backendSample.sampleStatus),
+      }
+    : null;
+  const qaSamples = samples.filter((item) => item.sampleStatus === "QA_REVIEW");
+  const results = backendSample?.analysisResults.map((result) => ({
+    parameter: result.parameter,
+    acceptanceCriteria:
+      backendSample.testSpecs.find((spec) => spec.parameter === result.parameter)
+        ?.acceptanceCriteria || "",
+    observedValue: result.observedValue,
+    unit: result.unit,
+    verdict: result.verdict || "",
+  })) || [];
 
   const [approvalComments, setApprovalComments] = useState("");
   const [submitting, setSubmitting] = useState(false);
@@ -100,72 +129,20 @@ export function QAReview({ sampleId: propSampleId }: QAReviewProps) {
     setCommentsError("");
     setSubmitting(true);
 
-    const idx = SAMPLE_INTAKES.findIndex(
-      (s) => s.sampleId === selectedSampleId,
-    );
-    if (idx !== -1) {
-      SAMPLE_INTAKES[idx] = {
-        ...SAMPLE_INTAKES[idx],
-        status: decision === "approve" ? "COA" : "SICReview",
-      };
-    }
+    await saveReviewMutation.mutateAsync({
+      sampleId: selectedSampleId,
+      review: {
+        qaHeadName: activeUser.name,
+        decision: decision === "approve",
+        comments: approvalComments,
+      },
+    });
 
     if (decision === "approve") {
-      const coaNumber = `COA-2026-${String(COA_RECORDS.length + 1).padStart(3, "0")}`;
-      const newCOA: COARecord = {
-        id: `coa-${Date.now()}`,
-        sampleId: selectedSampleId,
-        coaNumber,
-        registrationNumber: `REG-2026-${selectedSampleId.split("-")[2]}`,
-        clientName: sample?.customerName || "",
-        sampleName: sample?.sampleName || "",
-        issueDate: new Date().toISOString().split("T")[0],
-        analystName: "Elena Rodriguez",
-        sicReviewerName: "Rajesh Malhotra",
-        qaApproverName: activeUser.name,
-        analystSignDate: new Date(Date.now() - 86400000 * 2)
-          .toISOString()
-          .split("T")[0],
-        sicSignDate: new Date(Date.now() - 86400000)
-          .toISOString()
-          .split("T")[0],
-        qaSignDate: new Date().toISOString().split("T")[0],
-        parameters: results.map((r) => ({
-          parameter: r.parameter,
-          acceptanceCriteria: r.acceptanceCriteria,
-          observedValue: r.observedValue,
-          unit: r.unit,
-          verdict: r.verdict,
-        })),
-        overallResult: results.some(
-          (r) => r.verdict === "FAIL" || r.verdict === "OOS",
-        )
-          ? "FAIL"
-          : "PASS",
-        complianceStatement:
-          "This product complies with the specifications as per USP/BP/IP standards.",
-      };
-      COA_RECORDS.push(newCOA);
+      await approveMutation.mutateAsync(selectedSampleId);
       setApproved(true);
-    }
-
-    // Backend: save QA review and advance stage
-    if (actor && selectedSampleId) {
-      try {
-        const review = {
-          qaHeadName: activeUser.name,
-          decision: decision === "approve",
-          comments: approvalComments,
-        };
-        await (actor as any).saveQAReview(selectedSampleId, review);
-        if (decision === "approve") {
-          await (actor as any).approveQAReview(selectedSampleId);
-        } else {
-          await (actor as any).rejectQAReview(selectedSampleId);
-        }
-      } catch (err) {
-        console.warn("Backend QAReview failed:", err);
-      }
+    } else {
+      await rejectMutation.mutateAsync(selectedSampleId);
     }
 
     AUDIT_LOG.push({
@@ -249,7 +226,7 @@ export function QAReview({ sampleId: propSampleId }: QAReviewProps) {
                     </span>
                     <span className="text-sm font-medium">{s.sampleName}</span>
                   </div>
-                  <StatusBadge status={s.status} />
+                  <StatusBadge status={toWorkflowStage(s.sampleStatus)} />
                 </button>
               ))}
             </div>

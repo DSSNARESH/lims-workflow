@@ -1,3 +1,4 @@
+import { useQuery } from "@tanstack/react-query";
 import React, {
   createContext,
   useContext,
@@ -10,10 +11,10 @@ import {
   ALL_NOTIFICATIONS,
   DUMMY_USERS,
   type DummyUser,
-  MOCK_TASKS,
   type NotificationRecord,
   type TaskRecord,
 } from "../lib/mockData";
+import { buildTasksFromSamples, getSamples } from "../lib/springApi";
 
 interface RoleContextType {
   activeUser: DummyUser;
@@ -49,7 +50,14 @@ export function RoleProvider({ children }: { children: ReactNode }) {
   );
   const unreadCount = userNotifications.filter((n) => !n.isRead).length;
 
-  const userTasks = MOCK_TASKS.filter((t) => {
+  const { data: workflowSamples = [] } = useQuery({
+    queryKey: ["workflow-samples"],
+    queryFn: getSamples,
+  });
+
+  const derivedTasks = buildTasksFromSamples(workflowSamples);
+
+  const userTasks = derivedTasks.filter((t) => {
     if (activeUser.role === "admin") return true;
     if (activeUser.role === "qa") return t.assignedRole === "qa";
     if (activeUser.role === "sectionInCharge")

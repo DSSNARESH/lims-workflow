@@ -10,15 +10,15 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
 import { ArrowLeft, FlaskConical, Save, X } from "lucide-react";
 import type React from "react";
 import { useState } from "react";
 import { toast } from "sonner";
 import { useRole } from "../contexts/RoleContext";
-import { useActor } from "../hooks/useActor";
-import { buildSamplePayload, storeSampleId } from "../hooks/useBackendService";
-import { DUMMY_USERS, SAMPLE_INTAKES } from "../lib/mockData";
+import { DUMMY_USERS } from "../lib/mockData";
+import { createSample } from "../lib/springApi";
 
 const SAMPLE_TYPES = [
   "API",
@@ -45,7 +45,13 @@ const PHYSICAL_FORMS = [
 export function SampleIntake() {
   const navigate = useNavigate();
   const { activeUser } = useRole();
-  const { actor } = useActor();
+  const queryClient = useQueryClient();
+  const createSampleMutation = useMutation({
+    mutationFn: createSample,
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["workflow-samples"] });
+    },
+  });
 
   const [form, setForm] = useState({
     customerName: "",
@@ -108,51 +114,26 @@ export function SampleIntake() {
     e.preventDefault();
     if (!validate()) return;
     setSubmitting(true);
-    const newId = `SI-2026-${String(SAMPLE_INTAKES.length + 1).padStart(3, "0")}`;
+    const newId = `S-${Date.now()}`;
 
-    const approvalDecisions = form.assignToSectionInCharge.map((uid) => {
-      const user = DUMMY_USERS.find((u) => u.id === uid);
-      return {
-        userId: uid,
-        userName: user?.name ?? uid,
-        decision: "pending" as const,
-        comment: "",
-      };
-    });
-
-    SAMPLE_INTAKES.push({
+    await createSampleMutation.mutateAsync({
       sampleId: newId,
-      customerName: form.customerName,
-      contactPerson: form.contactPerson,
-      emailAddress: form.emailAddress,
+      clientName: form.customerName,
       sampleName: form.sampleName,
-      sampleType: form.sampleType,
-      physicalForm: form.physicalForm,
-      dateOfReceipt: form.dateOfReceipt,
-      numberOfUnits: form.numberOfUnits,
-      specialHandling: form.specialHandling,
-      assignToSectionInCharge: form.assignToSectionInCharge,
-      approvalDecisions,
-      status: "Intake",
-      createdAt: new Date().toISOString(),
-      createdBy: activeUser.id,
+      testName: form.sampleType,
+      dateReceived: new Date(form.dateOfReceipt).toISOString(),
+      registrationId: 0,
+      sampleStatus: "PENDING",
+      rfa: {
+        registration: 0,
+        billing: 0,
+        sampleDetails: 0,
+      },
+      testSpecs: [],
+      analysisResults: [],
+      sicReview: null,
+      qaReview: null,
     });
-
-    // Backend: persist sample to canister
-    if (actor) {
-      try {
-        const backendSample = buildSamplePayload({
-          sampleId: newId,
-          sampleName: form.sampleName,
-          clientName: form.customerName,
-          testName: form.sampleType,
-        });
-        const id = await actor.createSample(backendSample);
-        storeSampleId(id);
-      } catch (err) {
-        console.warn("Backend createSample failed (mock data used):", err);
-      }
-    }
 
     setSubmitting(false);
     toast.success(`Sample ${newId} created successfully`, {

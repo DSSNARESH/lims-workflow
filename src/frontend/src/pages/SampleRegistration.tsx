@@ -13,6 +13,7 @@ import {
 } from "@/components/ui/select";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
 import {
   ArrowLeft,
@@ -31,18 +32,16 @@ import { useRef, useState } from "react";
 import { toast } from "sonner";
 import { StatusBadge } from "../components/StatusBadge";
 import { useRole } from "../contexts/RoleContext";
-import { useActor } from "../hooks/useActor";
 import {
   AUDIT_LOG,
   CLIENTS,
   type Client,
   type RFARecord,
   RFA_RECORDS,
-  SAMPLE_INTAKES,
   type SampleDetail,
   TEST_SAMPLES,
-  getSampleById,
 } from "../lib/mockData";
+import { getSamples, toWorkflowStage, updateSampleStage } from "../lib/springApi";
 
 interface SampleRegistrationProps {
   sampleId?: string;
@@ -505,15 +504,46 @@ export function SampleRegistration({
 }: SampleRegistrationProps) {
   const navigate = useNavigate();
   const { activeUser } = useRole();
-  const { actor } = useActor();
+  const queryClient = useQueryClient();
+  const { data: samples = [] } = useQuery({
+    queryKey: ["workflow-samples"],
+    queryFn: getSamples,
+  });
+  const updateStageMutation = useMutation({
+    mutationFn: ({ sampleId, stage }: { sampleId: string; stage: "TEST_SPEC" }) =>
+      updateSampleStage(sampleId, stage),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["workflow-samples"] });
+    },
+  });
 
   const [selectedSampleId, setSelectedSampleId] = useState(propSampleId || "");
-  const sample = selectedSampleId ? getSampleById(selectedSampleId) : null;
+  const selectedBackendSample = selectedSampleId
+    ? samples.find((item) => item.sampleId === selectedSampleId) ?? null
+    : null;
+  const sample = selectedBackendSample
+    ? {
+        sampleId: selectedBackendSample.sampleId,
+        customerName: selectedBackendSample.clientName,
+        contactPerson: "",
+        emailAddress: "",
+        sampleName: selectedBackendSample.sampleName,
+        sampleType: selectedBackendSample.testName,
+        dateOfReceipt: selectedBackendSample.dateReceived,
+        requestedTests: [],
+        status: toWorkflowStage(selectedBackendSample.sampleStatus),
+      }
+    : null;
   const existingRFA = RFA_RECORDS.find((r) => r.sampleId === selectedSampleId);
 
-  const registrationSamples = SAMPLE_INTAKES.filter(
-    (s) => s.status === "Registration",
-  );
+  const registrationSamples = samples
+    .filter((item) => item.sampleStatus === "REGISTRATION")
+    .map((item) => ({
+      sampleId: item.sampleId,
+      sampleName: item.sampleName,
+      customerName: item.clientName,
+      status: toWorkflowStage(item.sampleStatus),
+    }));
   const [tab, setTab] = useState("client");
   const [submitting, setSubmitting] = useState(false);
 
@@ -645,20 +675,10 @@ export function SampleRegistration({
     };
     RFA_RECORDS.push(newRFA);
 
-    const idx = SAMPLE_INTAKES.findIndex(
-      (s) => s.sampleId === selectedSampleId,
-    );
-    if (idx !== -1)
-      SAMPLE_INTAKES[idx] = { ...SAMPLE_INTAKES[idx], status: "TestSpec" };
-
-    // Backend: advance sample to TestSpec stage
-    if (actor && selectedSampleId) {
-      try {
-        await actor.updateSample(selectedSampleId, "TestSpec");
-      } catch (err) {
-        console.warn("Backend updateSample (Registration) failed:", err);
-      }
-    }
+    await updateStageMutation.mutateAsync({
+      sampleId: selectedSampleId,
+      stage: "TEST_SPEC",
+    });
 
     AUDIT_LOG.push({
       id: `al-${Date.now()}`,
