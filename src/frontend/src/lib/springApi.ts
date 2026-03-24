@@ -64,7 +64,7 @@ export interface SampleDto {
   qaReview: QaReviewDto | null;
 }
 
-const API_BASE = "/api";
+const API_BASE = (import.meta.env.VITE_SPRING_API_BASE as string | undefined) || "/api";
 
 async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`${API_BASE}${path}`, {

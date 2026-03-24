@@ -21,7 +21,7 @@ import {
   X,
 } from "lucide-react";
 import type React from "react";
-import { useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 import { AnimatedTabs } from "../components/AnimatedTabs";
 import { StatusBadge } from "../components/StatusBadge";
@@ -29,6 +29,7 @@ import { useRole } from "../contexts/RoleContext";
 import { useActor } from "../hooks/useActor";
 import { buildSamplePayload, storeSampleId } from "../hooks/useBackendService";
 import { DUMMY_USERS, SAMPLE_INTAKES } from "../lib/mockData";
+import { createSample as createSpringSample, getSamples } from "../lib/springApi";
 
 const SAMPLE_TYPES = [
   "API",
@@ -56,6 +57,7 @@ export function SampleIntake() {
   const navigate = useNavigate();
   const { activeUser } = useRole();
   const { actor } = useActor();
+  const useSpringApi = import.meta.env.VITE_USE_SPRING_API === "true";
   const [activeTab, setActiveTab] = useState("new");
   const [historySearch, setHistorySearch] = useState("");
   const [historyStatus, setHistoryStatus] = useState("all");
@@ -74,6 +76,45 @@ export function SampleIntake() {
   });
   const [submitting, setSubmitting] = useState(false);
   const [errors, setErrors] = useState<Record<string, string>>({});
+  const [springHistory, setSpringHistory] = useState<typeof SAMPLE_INTAKES>([]);
+
+  useEffect(() => {
+    if (!useSpringApi) return;
+
+    let cancelled = false;
+    const loadSamples = async () => {
+      try {
+        const samples = await getSamples();
+        if (cancelled) return;
+        setSpringHistory(
+          samples.map((sample) => ({
+            sampleId: sample.sampleId,
+            customerName: sample.clientName,
+            contactPerson: sample.clientName,
+            emailAddress: "",
+            sampleName: sample.sampleName,
+            sampleType: sample.testName,
+            physicalForm: "",
+            dateOfReceipt: sample.dateReceived?.slice(0, 10) || new Date().toISOString().split("T")[0],
+            numberOfUnits: 1,
+            specialHandling: "",
+            assignToSectionInCharge: [],
+            approvalDecisions: [],
+            status: "Intake",
+            createdAt: sample.dateReceived,
+            createdBy: "spring-api",
+          })),
+        );
+      } catch (error) {
+        console.warn("Failed to load Spring Boot sample history.", error);
+      }
+    };
+
+    loadSamples();
+    return () => {
+      cancelled = true;
+    };
+  }, [useSpringApi]);
 
   const sectionInCharges = DUMMY_USERS.filter(
     (u) => u.role === "sectionInCharge",
@@ -162,6 +203,44 @@ export function SampleIntake() {
         console.warn("Backend createSample failed:", err);
       }
     }
+
+    if (useSpringApi) {
+      try {
+        await createSpringSample({
+          sampleId: newId,
+          clientName: form.customerName,
+          sampleName: form.sampleName,
+          testName: form.sampleType,
+          dateReceived: form.dateOfReceipt,
+        });
+        const refreshed = await getSamples();
+        setSpringHistory(
+          refreshed.map((sample) => ({
+            sampleId: sample.sampleId,
+            customerName: sample.clientName,
+            contactPerson: sample.clientName,
+            emailAddress: "",
+            sampleName: sample.sampleName,
+            sampleType: sample.testName,
+            physicalForm: "",
+            dateOfReceipt: sample.dateReceived?.slice(0, 10) || new Date().toISOString().split("T")[0],
+            numberOfUnits: 1,
+            specialHandling: "",
+            assignToSectionInCharge: [],
+            approvalDecisions: [],
+            status: "Intake",
+            createdAt: sample.dateReceived,
+            createdBy: "spring-api",
+          })),
+        );
+      } catch (err) {
+        console.warn("Spring Boot createSample failed:", err);
+        toast.error("Spring API save failed", {
+          description: "The sample was created in UI state, but backend persistence failed.",
+        });
+      }
+    }
+
     setSubmitting(false);
     toast.success(`Sample ${newId} created`, {
       description: "Pending eligibility check",
@@ -191,8 +270,13 @@ export function SampleIntake() {
     (u) => !form.assignToSectionInCharge.includes(u.id),
   );
 
-  const allStatuses = [...new Set(SAMPLE_INTAKES.map((s) => s.status))];
-  const filteredHistory = [...SAMPLE_INTAKES]
+  const historyRecords = useMemo(
+    () => (useSpringApi ? springHistory : SAMPLE_INTAKES),
+    [springHistory, useSpringApi],
+  );
+
+  const allStatuses = [...new Set(historyRecords.map((s) => s.status))];
+  const filteredHistory = [...historyRecords]
     .sort(
       (a, b) =>
         new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
@@ -245,7 +329,7 @@ export function SampleIntake() {
                   id: "history",
                   label: "History",
                   icon: <History className="h-3.5 w-3.5" />,
-                  count: SAMPLE_INTAKES.length,
+                  count: historyRecords.length,
                 },
               ]}
               activeTab={activeTab}
