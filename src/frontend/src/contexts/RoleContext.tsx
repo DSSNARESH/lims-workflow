@@ -14,6 +14,7 @@ import {
   type NotificationRecord,
   type TaskRecord,
 } from "../lib/mockData";
+import { buildTasksFromSamples, getSamples } from "../lib/springApi";
 
 interface RoleContextType {
   activeUser: DummyUser;
@@ -36,9 +37,11 @@ const RoleContext = createContext<RoleContextType | undefined>(undefined);
 const APP_START_TIME = new Date();
 
 export function RoleProvider({ children }: { children: ReactNode }) {
+  const useSpringApi = import.meta.env.VITE_USE_SPRING_API === "true";
   const [activeUser, setActiveUserState] = useState<DummyUser>(DUMMY_USERS[0]);
   const [notificationsState, setNotificationsState] =
     useState<NotificationRecord[]>(ALL_NOTIFICATIONS);
+  const [springTasks, setSpringTasks] = useState<TaskRecord[]>([]);
   const [sessionSeconds, setSessionSeconds] = useState(0);
   const [uptimeSeconds, setUptimeSeconds] = useState(0);
   const [loginTime, setLoginTime] = useState<Date>(new Date());
@@ -49,7 +52,9 @@ export function RoleProvider({ children }: { children: ReactNode }) {
   );
   const unreadCount = userNotifications.filter((n) => !n.isRead).length;
 
-  const userTasks = MOCK_TASKS.filter((t) => {
+  const tasksSource = useSpringApi ? springTasks : MOCK_TASKS;
+
+  const userTasks = tasksSource.filter((t) => {
     if (activeUser.role === "admin") return true;
     if (activeUser.role === "qa") return t.assignedRole === "qa";
     if (activeUser.role === "sectionInCharge")
@@ -75,6 +80,33 @@ export function RoleProvider({ children }: { children: ReactNode }) {
       if (timerRef.current) clearInterval(timerRef.current);
     };
   }, []);
+
+  useEffect(() => {
+    if (!useSpringApi) return;
+
+    let cancelled = false;
+
+    const loadSpringTasks = async () => {
+      try {
+        const samples = await getSamples();
+        if (cancelled) return;
+        setSpringTasks(buildTasksFromSamples(samples));
+      } catch (error) {
+        console.warn("Unable to load Spring Boot tasks; using empty task list.", error);
+        if (!cancelled) {
+          setSpringTasks([]);
+        }
+      }
+    };
+
+    loadSpringTasks();
+    const interval = setInterval(loadSpringTasks, 15000);
+
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
+  }, [useSpringApi]);
 
   const setActiveUser = (user: DummyUser) => {
     setActiveUserState(user);
