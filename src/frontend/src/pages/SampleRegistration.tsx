@@ -33,6 +33,7 @@ import {
 import type React from "react";
 import { useRef, useState } from "react";
 import { toast } from "sonner";
+import { AnimatedTabs } from "../components/AnimatedTabs";
 import { StatusBadge } from "../components/StatusBadge";
 import { useRole } from "../contexts/RoleContext";
 import { useActor } from "../hooks/useActor";
@@ -1483,11 +1484,22 @@ export function SampleRegistration({
       )}
 
       <Tabs value={tab} onValueChange={setTab} className="space-y-4">
-        <TabsList className="grid grid-cols-3 w-full">
-          <TabsTrigger value="client">Client Info</TabsTrigger>
-          <TabsTrigger value="billing">Billing</TabsTrigger>
-          <TabsTrigger value="receipt">Sample Receipt</TabsTrigger>
-        </TabsList>
+        <div className="bg-white border border-border rounded-xl px-4 py-3 shadow-sm">
+          <AnimatedTabs
+            tabs={[
+              { id: "client", label: "Client Info" },
+              { id: "billing", label: "Billing" },
+              { id: "receipt", label: "Sample Receipt" },
+              {
+                id: "history",
+                label: "Workflow History",
+                icon: <History className="h-3.5 w-3.5" />,
+              },
+            ]}
+            activeTab={tab}
+            onTabChange={setTab}
+          />
+        </div>
 
         {/* Tab 1: Client Info */}
         <TabsContent value="client">
